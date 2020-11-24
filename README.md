@@ -2,7 +2,7 @@
 
 It is an add-on for importing and adjusting PBR materials.
 
-Demo: https://blenderartists.org/t/material-applier/1267349
+Examples: https://blenderartists.org/t/material-applier/1267349
 
 Info: https://spark.adobe.com/page/HxjzDLFGeP7j5/
 
