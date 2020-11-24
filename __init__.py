@@ -27,6 +27,7 @@ try:
 except:
     import subprocess
     python_binary =  bpy.app.binary_path_python
+    # sys.executable ?
     try:
         subprocess.run([python_binary, '-m', 'ensurepip'], check=True)
         # subprocess.run([python_binary, '-m', 'ensurepip', '--upgrade'], check=True)

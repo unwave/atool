@@ -4,3 +4,4 @@ __pycache__/
 site-packages/
 .ropeproject/
 LICENSE
+material_settings.db
