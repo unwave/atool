@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"languageTool.enabled": false,
+		"search.exclude":{
+			"site-packages": true
+		}
+	}
+}

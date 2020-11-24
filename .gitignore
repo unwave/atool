@@ -1,0 +1,6 @@
+*.py[cod]
+__pycache__/
+*.blend1
+site-packages/
+.ropeproject/
+LICENSE
