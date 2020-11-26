@@ -1655,13 +1655,16 @@ class MATAPP_OT_apply_material(bpy.types.Operator, ImportHelper):
                     point = results.submatches[-1].span()[1]
                     possible_variants += [results]
 
-            import inspect
-            print()
-            for variants in possible_variants:
-                variants = inspect.getmembers(variants, lambda i: not(inspect.isroutine(i)))
-                variants = [i for i in variants if not i[0].startswith('_')]
-                print(*variants, sep='\n')
-                print()
+            if not possible_variants:
+                return None
+
+            # import inspect
+            # print()
+            # for variants in possible_variants:
+            #     variants = inspect.getmembers(variants)
+            #     variants = [i for i in variants if not i[0].startswith('_') and not inspect.isroutine(i[1])]
+            #     print(*variants, sep='\n')
+            #     print()
 
             def submatch_to_string(submatch):
                 return  string[submatch.span()[0]:submatch.span()[1]]
