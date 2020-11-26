@@ -7,6 +7,7 @@ Examples: https://blenderartists.org/t/material-applier/1267349
 Info: https://spark.adobe.com/page/HxjzDLFGeP7j5/
 
 Support me:
+* Give feedback
 * Share the add-on
 * Suggest features
 * Report bugs
