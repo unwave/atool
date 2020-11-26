@@ -297,7 +297,7 @@ def ensure_adaptive_subdivision(operator, context, new_material = False):
         return displacement_node
     
     material_output_displacement_links = material_output.inputs[2].links
-    if len(material_output_displacement_links) == 0:
+    if not material_output_displacement_links:
         displacement_node = add_displacement_node()
     else:
         node = material_output_displacement_links[0].from_node
@@ -315,16 +315,19 @@ def ensure_adaptive_subdivision(operator, context, new_material = False):
             links.new(height_output, displacement_node.inputs[0])
             return {'FINISHED'}
 
-    to_material_output = material_output.inputs[0].links[0].from_node
-    if to_material_output.type == 'BSDF_PRINCIPLED':
-        socket_names = []
-        color_links = to_material_output.inputs[0].links
-        if color_links != ():
-            to_bsdf = color_links[0].from_node
-            to_bsdf_height = to_bsdf.outputs.get("Height")
-            if to_bsdf_height != None:
-                links.new(to_bsdf.outputs["Height"], displacement_node.inputs[0])
-                return {'FINISHED'}
+    material_output_shader_links = material_output.inputs[0].links
+
+    if material_output_shader_links:
+        to_material_output = material_output_shader_links[0].from_node
+        if to_material_output.type == 'BSDF_PRINCIPLED':
+            # socket_names = []
+            color_links = to_material_output.inputs[0].links
+            if color_links != ():
+                to_bsdf = color_links[0].from_node
+                to_bsdf_height = to_bsdf.outputs.get("Height")
+                if to_bsdf_height != None:
+                    links.new(to_bsdf.outputs["Height"], displacement_node.inputs[0])
+                    return {'FINISHED'}
 
     operator.report({'INFO'}, "Cannot find height. Select a node with a \"Height\" output socket.")
     return {'FINISHED'}
