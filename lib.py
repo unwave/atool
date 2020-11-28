@@ -142,18 +142,38 @@ def add_ma_blending_node(operator, context, two_nodes, blend_node_tree):
     first_node_output_names = {i.name for i in first_node.outputs}
     second_node_output_names = {i.name for i in second_node.outputs}
 
+    def add_geometry_normal_input(input_number):
+        geometry_normal_node = nodes.new(type="ShaderNodeNewGeometry")
+        geometry_normal_node.location = (blend_node.location.x - 175, blend_node.location.y - 300 - 100 * (input_number - 1))
+        links.new(geometry_normal_node.outputs["Normal"], blend_node.inputs["Normal " + str(input_number)])
+        for output in geometry_normal_node.outputs:
+            if output.name != "Normal":
+                output.hide = True
+
     for input_name in blend_node_input_names:
-        is_name_used = False
+
+        is_name_used_by_first_input = False
+        is_name_used_by_second_input = False
         if input_name in first_node_output_names and first_node.outputs[input_name].hide == False:
             links.new(first_node.outputs[input_name], blend_node.inputs[input_name + " 1"])
-            is_name_used = True
+            is_name_used_by_first_input = True
         if input_name in second_node_output_names and second_node.outputs[input_name].hide == False:
             links.new(second_node.outputs[input_name], blend_node.inputs[input_name + " 2"])
-            is_name_used = True
-        if not is_name_used:
+            is_name_used_by_second_input = True
+
+        if is_name_used_by_first_input and is_name_used_by_second_input:
+            pass
+        elif not is_name_used_by_first_input and not is_name_used_by_second_input:
             blend_node.outputs[input_name].hide = True
             blend_node.inputs[input_name + " 1"].hide = True
             blend_node.inputs[input_name + " 2"].hide = True
+        elif input_name == "Normal":
+            if not is_name_used_by_first_input and is_name_used_by_second_input:
+                add_geometry_normal_input(1)
+            elif is_name_used_by_first_input and not is_name_used_by_second_input:
+                add_geometry_normal_input(2)
+
+    return {'FINISHED'}
 
 class MATAPP_OT_height_blend(bpy.types.Operator, MATAPP_node_editor_poll):
     bl_idname = "node.ma_add_height_blend"
@@ -169,11 +189,7 @@ class MATAPP_OT_height_blend(bpy.types.Operator, MATAPP_node_editor_poll):
             self.report({'INFO'}, "Select two nodes")
             return {'CANCELLED'}
 
-        result = add_ma_blending_node(self, context, (selected_nodes[1], selected_nodes[0]), get_node_tree_by_name("Height Blend MA"))
-        if result == {'FINISHED'}:
-            return {'FINISHED'}
-        else:
-            return {'CANCELLED'}
+        return add_ma_blending_node(self, context, (selected_nodes[1], selected_nodes[0]), get_node_tree_by_name("Height Blend MA"))
 
 
 class MATAPP_OT_detail_blend(bpy.types.Operator, MATAPP_node_editor_poll):
@@ -190,11 +206,7 @@ class MATAPP_OT_detail_blend(bpy.types.Operator, MATAPP_node_editor_poll):
             self.report({'INFO'}, "Select two nodes")
             return {'CANCELLED'}
 
-        result = add_ma_blending_node(self, context, (selected_nodes[1], selected_nodes[0]), get_node_tree_by_name("Detail Blend MA"))
-        if result == {'FINISHED'}:
-            return {'FINISHED'}
-        else:
-            return {'CANCELLED'}
+        return add_ma_blending_node(self, context, (selected_nodes[1], selected_nodes[0]), get_node_tree_by_name("Detail Blend MA"))
 
 
 class MATAPP_OT_make_links(bpy.types.Operator, MATAPP_node_editor_poll):
@@ -339,12 +351,7 @@ class MATAPP_OT_ensure_adaptive_subdivision(bpy.types.Operator, MATAPP_node_edit
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-
-        result = ensure_adaptive_subdivision(self, context)
-        if result == {'FINISHED'}:
-            return {'FINISHED'}
-        else:
-            return {'CANCELLED'}
+        return ensure_adaptive_subdivision(self, context)
 
 
 def normalize_texture(operator, context, new_material = False, node_groups = []):
@@ -371,23 +378,6 @@ def normalize_texture(operator, context, new_material = False, node_groups = [])
                     (minimum, maximum) = channel.getextrema()
             else:
                 (minimum, maximum) = image.getextrema()
-
-        # try:
-        #     with pillow_image.open(filepath) as image:
-        #         if len(image.getbands()) > 1:
-        #             if all_channels == True:
-        #                 relative_luminance = (0.2126, 0.7152, 0.0722, 0)
-        #                 bw_image = image.convert('L', relative_luminance)
-        #                 (minimum, maximum) = bw_image.getextrema()
-        #             else:
-        #                 channel = image.getchannel(channel_name)
-        #                 (minimum, maximum) = channel.getextrema()
-        #         else:
-        #             (minimum, maximum) = image.getextrema()
-        # except Exception as e:
-        #     print(e)
-        #     operator.report({'WARNING'}, f"Cannot find image in path: {filepath}")
-        #     return
 
         average = (minimum + maximum)/2
         if average < 1:
@@ -627,7 +617,7 @@ def normalize_texture(operator, context, new_material = False, node_groups = [])
 class MATAPP_OT_normalize_height(bpy.types.Operator, MATAPP_node_editor_poll):
     bl_idname = "node.ma_normalize_height_range"
     bl_label = "Normalize:"
-    bl_description = "Normalize the height range of MA material. Does not work for .EXR"
+    bl_description = "Normalize a texture range of a MA material or an image node texture. Does not work for .EXR"
     bl_options = {'REGISTER', 'UNDO'}
 
     def draw(self, context):
@@ -658,13 +648,7 @@ class MATAPP_OT_normalize_height(bpy.types.Operator, MATAPP_node_editor_poll):
         return context.window_manager.invoke_props_dialog(self, width = 200)
 
     def execute(self, context):
-
-        result = normalize_texture(self, context)
-
-        if result == {'FINISHED'}:
-            return {'FINISHED'}
-        else:
-            return {'CANCELLED'}
+        return normalize_texture(self, context)
 
 
 class MATAPP_OT_append_extra_nodes(bpy.types.Operator, MATAPP_node_editor_poll):
@@ -752,7 +736,9 @@ def set_default_settings(operator, context):
                 except:
                     pass
         
-        operator.report({'INFO'}, f"The settings have been saved for the group: {group.name}")
+        operator.report({'INFO'}, f"The settings have been baked for the group: {group.name}")
+    
+    return {'FINISHED'}
 
 class MATAPP_OT_bake_defaults(bpy.types.Operator, MATAPP_node_editor_poll):
     bl_idname = "node.ma_bake_node_group_defaults"
@@ -761,12 +747,7 @@ class MATAPP_OT_bake_defaults(bpy.types.Operator, MATAPP_node_editor_poll):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-
-        result = set_default_settings(self, context)
-        if result == {'FINISHED'}:
-            return {'FINISHED'}
-        else:
-            return {'CANCELLED'}
+        return set_default_settings(self, context)
 
 
 class MATAPP_OT_restore_default_settings(bpy.types.Operator, MATAPP_node_editor_poll):
@@ -825,7 +806,7 @@ class MATAPP_OT_restore_factory_settings(bpy.types.Operator, MATAPP_node_editor_
 class MATAPP_OT_save_material_settings(bpy.types.Operator, MATAPP_node_editor_poll):
     bl_idname = "node.ma_save_material_settings"
     bl_label = "Save Material Settings"
-    bl_description = "Save material settings of the selected MA materail node group"
+    bl_description = "Save material settings of the selected MA materail node group to the local database"
 
     def execute(self, context):
 
@@ -907,6 +888,7 @@ class MATAPP_OT_save_material_settings(bpy.types.Operator, MATAPP_node_editor_po
 
 
             connection.commit()
+            self.report({'INFO'}, f"The settings have been saved for the group: {group.name}")
 
         connection.close()
 
@@ -988,22 +970,17 @@ def load_material_settings(operator, context, new_material = False, node_groups 
 class MATAPP_OT_load_material_settings(bpy.types.Operator, MATAPP_node_editor_poll):
     bl_idname = "node.ma_load_material_settings"
     bl_label = "Load Material Settings"
-    bl_description = "Load material settings for the selected MA materail node group"
+    bl_description = "Load material settings for the selected MA materail node group from the local database"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-
-        result = load_material_settings(self, context)
-        if result == {'FINISHED'}:
-            return {'FINISHED'}
-        else:
-            return {'CANCELLED'}
+        return load_material_settings(self, context)
 
 
 class MATAPP_OT_open_in_file_browser(bpy.types.Operator, MATAPP_node_editor_poll):
     bl_idname = "node.ma_open_in_file_browser"
     bl_label = "Open File Browser"
-    bl_description = "Open the selected materail in a file browser"
+    bl_description = "Open the selected MA materail or the selected image in a file browser"
 	
     def execute(self, context):
 
@@ -1065,7 +1042,7 @@ class MATAPP_OT_open_in_file_browser(bpy.types.Operator, MATAPP_node_editor_poll
 class MATAPP_OT_transfer_settings(bpy.types.Operator, MATAPP_node_editor_poll):
     bl_idname = "node.ma_transfer_settings"
     bl_label = "Transfer Properties"
-    bl_description = "Transfer node settings from active to selected. It does not set them as default."
+    bl_description = "Transfer node settings from active to selected. It does not set them as default"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -1097,6 +1074,8 @@ def setup_material(operator, context):
 
     nodes = operator.matapp_node_tree.nodes
     links = operator.matapp_node_tree.links
+    inputs = operator.matapp_node_tree.inputs
+    outputs = operator.matapp_node_tree.outputs
 
     flags = {
         "albedo": False,
@@ -1245,7 +1224,7 @@ def setup_material(operator, context):
                 if bitmap_type[0] == "normal":
                     current_image.colorspace_settings.name = 'Non-Color'
                     if context.scene.matapp_properties.is_y_minus_normal_map:
-                        operator.matapp_node_tree.inputs["Y- Normal Map"].default_value = 1
+                        inputs["Y- Normal Map"].default_value = 1
                 else:
                     current_image.colorspace_settings.name = 'sRGB'
             else:
@@ -1261,7 +1240,7 @@ def setup_material(operator, context):
                 if bitmap_type[0] == "normal":
                     current_image.colorspace_settings.name = 'Non-Color'
                     if context.scene.matapp_properties.is_y_minus_normal_map:
-                        operator.matapp_node_tree.inputs["Y- Normal Map"].default_value = 1
+                        inputs["Y- Normal Map"].default_value = 1
                 else:
                     current_image.colorspace_settings.name = 'sRGB'
             else:
@@ -1314,9 +1293,10 @@ def setup_material(operator, context):
     if final_aspect_ratio == 1:
         pass
     elif final_aspect_ratio > 1:
-        operator.matapp_node_tree.inputs["Y Scale"].default_value = final_aspect_ratio
+        inputs["Y Scale"].default_value = final_aspect_ratio
     elif final_aspect_ratio < 1:
-        operator.matapp_node_tree.inputs["X Scale"].default_value = final_aspect_ratio
+        inputs["X Scale"].default_value = final_aspect_ratio
+
 
     if flags["albedo"]:
         if flags["ambient_occlusion"]:
@@ -1327,23 +1307,24 @@ def setup_material(operator, context):
     if flags["diffuse"] and not flags["ambient_occlusion"]:
         links.new(nodes["diffuse_post_in"].outputs[0], group_output_node.inputs["Base Color"])
 
+    
     if not flags["albedo"] and not flags["diffuse"]:
         if flags["ambient_occlusion"]:
             links.new(nodes["ambient_occlusion_post_out"].outputs[0], group_output_node.inputs["Base Color"])
         else:
-            operator.matapp_node_tree.outputs.remove(operator.matapp_node_tree.outputs["Base Color"])
+            outputs.remove(outputs["Base Color"])
 
     if not flags["ambient_occlusion"]:
-        operator.matapp_node_tree.inputs.remove(operator.matapp_node_tree.inputs["AO"])
+        inputs.remove(inputs["AO"])
 
     if not flags["metallic"]:
-        operator.matapp_node_tree.outputs.remove(operator.matapp_node_tree.outputs["Metallic"])
+        outputs.remove(outputs["Metallic"])
 
     if not flags["specular"]:
-        operator.matapp_node_tree.outputs.remove(operator.matapp_node_tree.outputs["Specular"])
+        outputs.remove(outputs["Specular"])
 
     if not flags["roughness"] and not flags["gloss"]:
-        operator.matapp_node_tree.outputs.remove(operator.matapp_node_tree.outputs["Roughness"])
+        outputs.remove(outputs["Roughness"])
 
     if not flags["roughness"] and flags["gloss"]:
         links.new(nodes["gloss_post_out"].outputs[0], group_output_node.inputs["Roughness"])
@@ -1361,24 +1342,30 @@ def setup_material(operator, context):
             add_gamma_0_4545_and_plug_output_to_mix_in("ambient_occlusion", "displacement", 0)
             operator.report({'INFO'}, "No displacement bitmap found, ambient occlusion used instead")
         else:
-            operator.matapp_node_tree.outputs.remove(operator.matapp_node_tree.outputs["Height"])
+            outputs.remove(outputs["Height"])
+            inputs_to_remove = []
+            for input_to_remove in inputs_to_remove:
+                inputs.remove(inputs[input_to_remove])
+                
 
     if not flags["opacity"]:
-        operator.matapp_node_tree.outputs.remove(operator.matapp_node_tree.outputs["Alpha"])
+        outputs.remove(outputs["Alpha"])
     
     if not flags["emissive"]:
-        operator.matapp_node_tree.outputs.remove(operator.matapp_node_tree.outputs["Emission"])
+        outputs.remove(outputs["Emission"])
 
     if not flags["normal"]:
         if flags["bump"]:
             links.new(nodes["bump_post_out"].outputs[0], group_output_node.inputs["Normal"])
         else:
-            operator.matapp_node_tree.outputs.remove(operator.matapp_node_tree.outputs["Normal"])
-        operator.matapp_node_tree.inputs.remove(operator.matapp_node_tree.inputs["Y- Normal Map"])
+            outputs.remove(outputs["Normal"])
+        inputs_to_remove = ["Y- Normal Map", "X Rotation′", "Y Rotation′"]
+        for input_to_remove in inputs_to_remove:
+            inputs.remove(inputs[input_to_remove])
 
 
     settings = {}
-    for input in operator.matapp_node_tree.inputs:
+    for input in inputs:
         if input.type != 'STRING':
             settings[input.name] = input.default_value
 
@@ -1545,7 +1532,7 @@ class MATAPP_OT_apply_material(bpy.types.Operator, ImportHelper):
                     self.update()
 
                 def remove(self, index):
-                    del self.submatches[-1]
+                    del self.submatches[index]
                     self.update()
 
                 def update(self):
@@ -1580,7 +1567,6 @@ class MATAPP_OT_apply_material(bpy.types.Operator, ImportHelper):
                             self.is_pre_separated = True
                     elif first_char_index == 0:
                         self.is_pre_separated = True
-                        print(self.is_pre_separated)
 
                     last_char_index = self.submatches[-1].span()[1]
                     if last_char_index != string_length:
@@ -1804,7 +1790,7 @@ class MATAPP_OT_apply_material(bpy.types.Operator, ImportHelper):
 class MATAPP_OT_convert_materail(bpy.types.Operator, MATAPP_node_editor_poll):
     bl_idname = "node.ma_convert_materail"
     bl_label = "Convert To"
-    bl_description = "Convert Material"
+    bl_description = "Convert the selected MA material"
     bl_options = {'REGISTER', 'UNDO'}
 
     def draw(self, context):
