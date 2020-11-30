@@ -11,4 +11,4 @@ Support me:
 * Share the add-on
 * Suggest features
 * Report bugs
-* Donate: [Gumroad](https://gumroad.com/l/material_applier), [Ko-Fi](https://ko-fi.com/unwave)
+* Donate: [Ko-Fi](https://ko-fi.com/unwave) (Fee: 0%), [Gumroad](https://gumroad.com/l/material_applier) (Fee: 5% + charge fee (3.5% + 30¢))
