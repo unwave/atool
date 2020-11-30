@@ -1361,7 +1361,10 @@ def setup_material(operator, context):
             outputs.remove(outputs["Normal"])
         inputs_to_remove = ["Y- Normal Map", "X Rotation′", "Y Rotation′"]
         for input_to_remove in inputs_to_remove:
-            inputs.remove(inputs[input_to_remove])
+            try:
+                inputs.remove(inputs[input_to_remove])
+            except:
+                pass
 
 
     settings = {}
