@@ -1,10 +1,10 @@
-# Material Applier
+# ATool
 
-It is an add-on for importing and adjusting PBR materials.
+An asset manager add-on.
 
-[Examples](https://blenderartists.org/t/material-applier/1267349) 
+[Blender Artists](https://blenderartists.org/t/material-applier/1267349) 
 
-[Info](https://spark.adobe.com/page/HxjzDLFGeP7j5/)
+[Node Groups Info](https://spark.adobe.com/page/HxjzDLFGeP7j5/)
 
 Support me:
 * Give feedback
