@@ -18,7 +18,7 @@ class ATOOL_PT_tools(bpy.types.Panel):
         column = layout.column()
 
         subcolumn_1 = column.column(align=True)
-        subcolumn_1.operator("atool.apply_material", text = "Add", icon='ADD').from_asset_browser = False
+        subcolumn_1.operator("atool.apply_material", text = "Import From", icon='ADD')
         subcolumn_1.operator("atool.convert_material", text = "Convert", icon='MODIFIER')
         column.separator()
 

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from collections import Counter
 import itertools
 
-from . view_3d_operator import get_current_browser_asset
+# from . view_3d_operator import get_current_browser_asset
 from . import type_definer
 from . imohashxx import hashfile
 from PIL import Image as pillow_image
@@ -1393,6 +1393,129 @@ def setup_material(operator, context):
 
     operator.atool_node_tree["at_flags"] = flags # not yet used
 
+def apply_material(operator, context):
+
+    self = operator
+
+    bitmap_paths_and_types, material_name = type_definer.define(self.file_paths, not self.not_rgb_plus_alpha, self.a_for_ambient_occlusion)
+
+    if not bitmap_paths_and_types:
+        self.report({'INFO'}, "No valid bitmaps found.")
+        return {'CANCELLED'}
+
+    if self.use_ignore_by_type:
+        ignored_types = set(self.ignore_by_type.split(" "))
+        bitmap_paths_and_types = [(path, type) for path, type in bitmap_paths_and_types if not (len(type) == 1 and type[0] in ignored_types)]
+    
+    if bitmap_paths_and_types and self.use_ignore_by_format:
+        ignored_formats = tuple(self.ignore_by_format.split(" "))
+        bitmap_paths_and_types = [(path, type) for path, type in bitmap_paths_and_types if not path.endswith(ignored_formats)]
+
+    if bitmap_paths_and_types and self.use_prefer_over:
+        for preferred, ignored in [tuple(pare.split("-")) for pare in self.prefer_over.split(" ")]:
+            for path_type_tuple in bitmap_paths_and_types.copy():
+                type = path_type_tuple[1]
+                if not len(type) == 1:
+                    continue
+                if type[0] == ignored and preferred in (type[0] for path, type in bitmap_paths_and_types if len(type) == 1):
+                    bitmap_paths_and_types.remove(path_type_tuple)
+
+    if not bitmap_paths_and_types:
+        self.report({'INFO'}, "No valid bitmaps found. All valid ones were excluded.")
+        return {'CANCELLED'}
+    
+    self.image_data_blocks = []
+    for bitmap_path, bitmap_type in bitmap_paths_and_types:
+        image_data_block = bpy.data.images.load(filepath = bitmap_path, check_existing=True)
+        image_data_block["at_type"] = bitmap_type
+        self.image_data_blocks.append(image_data_block)
+
+    script_file_directory = os.path.dirname(os.path.realpath(__file__))
+    self.templates_file_path = os.path.join(script_file_directory, "data.blend", "NodeTree")
+
+    material_type = "_at_temp_"
+    if self.use_triplanar:
+        material_type += "tri_"
+    if self.use_untiling:
+        material_type += "unt_"
+
+    bpy.ops.wm.append(directory = self.templates_file_path, filename = material_type, set_fake = True)
+    self.atool_node_tree = bpy.data.node_groups[material_type]
+
+    if material_type == "_at_temp_":
+        self.material_type = 1
+    elif material_type == "_at_temp_unt_":
+        self.material_type = 2
+    elif material_type == "_at_temp_tri_":
+        self.material_type = 3
+    elif material_type == "_at_temp_tri_unt_":
+        self.material_type = 4
+
+    if self.asset_name:
+        self.atool_node_tree.name = self.asset_name
+    else:
+        self.atool_node_tree.name = "M_" + material_name
+
+    if self.height_scale != None:
+        self.atool_node_tree.inputs["Scale′"].default_value = self.height_scale
+    setup_material(self ,context)
+
+    active_object = context.object
+    if not active_object:
+        self.report({'INFO'}, "No active object. The material was added as a node group.")
+        return {'FINISHED'}
+
+    active_material = active_object.active_material
+    if active_material:
+
+        node_group = active_material.node_tree.nodes.new( type = 'ShaderNodeGroup' )
+        node_group.node_tree = self.atool_node_tree
+        node_group.name = node_group.node_tree.name
+
+        node_group.width = 300
+        node_group.show_options = False
+
+        principled_node = active_object.active_material.node_tree.nodes.get("Principled BSDF")
+        if principled_node:
+            (x, y) = principled_node.location
+        else:
+            (x, y) = (0, 0)
+
+        node_group.location = (x - 400, y)
+    else:
+        new_material = bpy.data.materials.new(name="New Material")
+        new_material.use_nodes = True
+        active_object.data.materials.append(new_material)
+
+        # active_object.active_material_index = len(context.object.material_slots) - 1
+
+        node_group = new_material.node_tree.nodes.new( type = 'ShaderNodeGroup' )
+        node_group.node_tree = self.atool_node_tree
+        node_group.name = node_group.node_tree.name
+        node_group.width = 300
+        node_group.show_options = False
+        
+        links = new_material.node_tree.links
+
+        principled_node = new_material.node_tree.nodes["Principled BSDF"]
+        (x, y) = principled_node.location
+        node_group.location = (x - 400, y)
+
+        names_to_ignore = {"Height", "Seam"}
+        for output in node_group.outputs:
+            if output.name not in names_to_ignore:
+                links.new(node_group.outputs[output.name], principled_node.inputs[output.name])
+
+    if self.atool_id:
+        self.atool_node_tree["atool_id"] = self.atool_id
+
+    if self.load_settings:
+        load_material_settings(self, context, new_material = True, node_groups = [node_group])
+
+    if self.ensure_adaptive_subdivision:
+        ensure_adaptive_subdivision(self, context, new_material = True)
+
+    return {'FINISHED'}
 
 class ATOOL_OT_apply_material(bpy.types.Operator, ImportHelper):
     bl_idname = "atool.apply_material"
@@ -1465,7 +1588,7 @@ class ATOOL_OT_apply_material(bpy.types.Operator, ImportHelper):
     use_ignore_by_type: bpy.props.BoolProperty(
         name="Ignore Type",
         description="Ignore bitmap by type",
-        default = True
+        default = False
         )
 
     ignore_by_format: bpy.props.StringProperty(
@@ -1476,7 +1599,7 @@ class ATOOL_OT_apply_material(bpy.types.Operator, ImportHelper):
     use_ignore_by_format: bpy.props.BoolProperty(
         name="Ignore Format",
         description="Ignore bitmap by file format",
-        default = True
+        default = False
         )
 
     prefer_over: bpy.props.StringProperty(
@@ -1487,18 +1610,12 @@ class ATOOL_OT_apply_material(bpy.types.Operator, ImportHelper):
     use_prefer_over: bpy.props.BoolProperty(
         name="Prefer Type",
         description="Prefer one type over another and ignore the latter",
-        default = True
+        default = False
         )
-
-
-    from_asset_browser: bpy.props.BoolProperty(
-        options={'HIDDEN'}
-    )
 
     def draw(self, context):
 
         layout = self.layout
-        # layout.use_property_split = True
         layout.alignment = 'LEFT'
 
         layout.prop(self, "is_y_minus_normal_map")
@@ -1533,160 +1650,24 @@ class ATOOL_OT_apply_material(bpy.types.Operator, ImportHelper):
         if self.use_prefer_over:
             layout.prop(self, "prefer_over", text='')
 
-    def invoke(self, context, event):
-        if self.from_asset_browser:
-            return context.window_manager.invoke_props_dialog(self, width = 300)
-        else:
-            return super().invoke(context, event)
+    # def invoke(self, context, event):
+    #     if self.from_asset_browser:
+    #         return context.window_manager.invoke_props_dialog(self, width = 300)
+    #     else:
+    #         return super().invoke(context, event)
 
     def execute(self, context):
 
-        height_scale = None
-        asset_name = None
+        self.height_scale = None
+        self.asset_name = None
+        self.atool_id = None
 
-        if self.from_asset_browser:
-            current_asset = get_current_browser_asset(self, context)
-            if not current_asset:
-                return {'CANCELLED'}
-            self.file_paths = current_asset.get_imags()
-            if not self.file_paths:
-                self.report({'INFO'}, "No image files.")
-                return {'CANCELLED'}
-            atool_id = current_asset.id
-
-            dimensions = current_asset.info.get("dimensions")
-            if dimensions:
-                x, y, z = dimensions
-                height_scale = z * min(x, y)
-
-            asset_name = current_asset.info.get("name")
-
-        else:
-            if self.files[0].name == "":
-                self.report({'INFO'}, "No files selected.")
-                return {'CANCELLED'}
-            self.file_paths = [os.path.join(self.directory, file.name) for file in self.files]
-            atool_id = None
-
-        bitmap_paths_and_types, material_name = type_definer.define(self.file_paths, not self.not_rgb_plus_alpha, self.a_for_ambient_occlusion)
-
-        if not bitmap_paths_and_types:
-            self.report({'INFO'}, "No valid bitmaps found.")
+        if self.files[0].name == "":
+            self.report({'INFO'}, "No files selected.")
             return {'CANCELLED'}
+        self.file_paths = [os.path.join(self.directory, file.name) for file in self.files]
 
-        if self.use_ignore_by_type:
-            ignored_types = set(self.ignore_by_type.split(" "))
-            bitmap_paths_and_types = [(path, type) for path, type in bitmap_paths_and_types if not (len(type) == 1 and type[0] in ignored_types)]
-        
-        if bitmap_paths_and_types and self.use_ignore_by_format:
-            ignored_formats = tuple(self.ignore_by_format.split(" "))
-            bitmap_paths_and_types = [(path, type) for path, type in bitmap_paths_and_types if not path.endswith(ignored_formats)]
-
-        if bitmap_paths_and_types and self.use_prefer_over:
-            for preferred, ignored in [tuple(pare.split("-")) for pare in self.prefer_over.split(" ")]:
-                for path_type_tuple in bitmap_paths_and_types.copy():
-                    type = path_type_tuple[1]
-                    if not len(type) == 1:
-                        continue
-                    if type[0] == ignored and preferred in (type[0] for path, type in bitmap_paths_and_types if len(type) == 1):
-                        bitmap_paths_and_types.remove(path_type_tuple)
-
-        if not bitmap_paths_and_types:
-            self.report({'INFO'}, "No valid bitmaps found. All valid ones were excluded.")
-            return {'CANCELLED'}
-        
-        self.image_data_blocks = []
-        for bitmap_path, bitmap_type in bitmap_paths_and_types:
-            image_data_block = bpy.data.images.load(filepath = bitmap_path, check_existing=True)
-            image_data_block["at_type"] = bitmap_type
-            self.image_data_blocks.append(image_data_block)
-
-        script_file_directory = os.path.dirname(os.path.realpath(__file__))
-        self.templates_file_path = os.path.join(script_file_directory, "data.blend", "NodeTree")
-
-        material_type = "_at_temp_"
-        if self.use_triplanar:
-            material_type += "tri_"
-        if self.use_untiling:
-            material_type += "unt_"
-
-        bpy.ops.wm.append(directory = self.templates_file_path, filename = material_type, set_fake = True)
-        self.atool_node_tree = bpy.data.node_groups[material_type]
-
-        if material_type == "_at_temp_":
-            self.material_type = 1
-        elif material_type == "_at_temp_unt_":
-            self.material_type = 2
-        elif material_type == "_at_temp_tri_":
-            self.material_type = 3
-        elif material_type == "_at_temp_tri_unt_":
-            self.material_type = 4
-
-        if asset_name:
-            self.atool_node_tree.name = asset_name
-        else:
-            self.atool_node_tree.name = "M_" + material_name
-
-        if height_scale != None:
-            self.atool_node_tree.inputs["Scale′"].default_value = height_scale
-        setup_material(self ,context)
-
-        active_object = context.object
-        if not active_object:
-            self.report({'INFO'}, "No active object. The material was added as a node group.")
-            return {'FINISHED'}
-
-        active_material = active_object.active_material
-        if active_material:
-
-            node_group = active_material.node_tree.nodes.new( type = 'ShaderNodeGroup' )
-            node_group.node_tree = self.atool_node_tree
-            node_group.name = node_group.node_tree.name
-
-            node_group.width = 300
-            node_group.show_options = False
-
-            principled_node = active_object.active_material.node_tree.nodes.get("Principled BSDF")
-            if principled_node:
-                (x, y) = principled_node.location
-            else:
-                (x, y) = (0, 0)
-
-            node_group.location = (x - 400, y)
-        else:
-            new_material = bpy.data.materials.new(name="New Material")
-            new_material.use_nodes = True
-            active_object.data.materials.append(new_material)
-
-            # active_object.active_material_index = len(context.object.material_slots) - 1
-
-            node_group = new_material.node_tree.nodes.new( type = 'ShaderNodeGroup' )
-            node_group.node_tree = self.atool_node_tree
-            node_group.name = node_group.node_tree.name
-            node_group.width = 300
-            node_group.show_options = False
-            
-            links = new_material.node_tree.links
-
-            principled_node = new_material.node_tree.nodes["Principled BSDF"]
-            (x, y) = principled_node.location
-            node_group.location = (x - 400, y)
-
-            names_to_ignore = {"Height", "Seam"}
-            for output in node_group.outputs:
-                if output.name not in names_to_ignore:
-                    links.new(node_group.outputs[output.name], principled_node.inputs[output.name])
-
-        if atool_id:
-            self.atool_node_tree["atool_id"] = atool_id
-
-        if self.load_settings:
-            load_material_settings(self, context, new_material = True, node_groups = [node_group])
-
-        if self.ensure_adaptive_subdivision:
-            ensure_adaptive_subdivision(self, context, new_material = True)
-
-        return {'FINISHED'}
+        return apply_material(self, context)
 
 class ATOOL_OT_convert_material(bpy.types.Operator, Shader_Editor_Poll):
     bl_idname = "atool.convert_material"
