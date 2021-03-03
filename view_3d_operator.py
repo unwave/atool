@@ -244,11 +244,12 @@ class ATOOL_OT_import_asset(bpy.types.Operator, Object_Mode_Poll):
 
         blends = [file.path for file in os.scandir(asset.path) if file.path.endswith(".blend")]
         if not blends:
-            # bpy.ops.atool.apply_material(from_asset_browser=True)
-            result = bpy.ops.atool.apply_material('INVOKE_DEFAULT', from_asset_browser = True)
-            return {'FINISHED'} if result == {'FINISHED'} else {'CANCELLED'}
-            # self.report({'INFO'}, "No blends.")
-            # return {'CANCELLED'}
+            if asset.get_imags():
+                result = bpy.ops.atool.apply_material('INVOKE_DEFAULT', from_asset_browser = True)
+                return {'FINISHED'} if result == {'FINISHED'} else {'CANCELLED'}
+            else:
+                self.report({'INFO'}, "Nothing to import.")
+                return {'CANCELLED'}
 
         latest_blend = max(blends, key=os.path.getmtime)
 
@@ -273,7 +274,7 @@ class ATOOL_OT_import_asset(bpy.types.Operator, Object_Mode_Poll):
                 data_to.collections = [collection for collection in data_from.collections if not collection.startswith(self.ignore)]
 
         if not data_to.objects and not data_to.collections:
-            self.report({'INFO'}, "Nothing to import.")
+            self.report({'INFO'}, "Nothing to import from the blend file.")
             bpy.data.libraries.remove(imported_library)
             return {'CANCELLED'}
 

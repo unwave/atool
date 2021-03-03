@@ -770,7 +770,8 @@ class AssetData():
         self.preview_collection
         del self.preview_collection[asset.icon]
         del asset
-        asset = Asset(asset_folder)
+
+        asset = Asset.default(PseudoDirEntry(asset_folder))
         self.data[asset.id] = asset
 
         update_ui()
