@@ -5,3 +5,7 @@ site-packages/
 .ropeproject/
 LICENSE
 material_settings.db
+local_resources/
+atool_updater/
+.vscode/
+config.json

@@ -1,72 +1,102 @@
 bl_info = {
-    "name" : "Material Applier",
+    "name" : "ATool",
     "author" : "unwave",
     "description" : "",
-    "blender" : (2, 81, 0),
+    "blender" : (2, 83, 0),
     "version" : (0, 0, 1),
     "location" : "",
     "warning" : "",
-    "category" : "Material"
+    "category" : "Generic"
 }
 
+from timeit import default_timer as timer
+start = timer()
+
+import typing
 import bpy
 import sys
-import os
+from . import addon_updater_ops
 
-script_file_directory = os.path.dirname(os.path.realpath(__file__))
-site_packages_path = os.path.join(script_file_directory, "site-packages")
+def ensure_site_packages(packages: typing.List[typing.Tuple[str, str]]):
+    """ `packages`: list of tuples (<import name>, <pip name>) """
+    
+    if not packages:
+        return
 
-if not os.path.exists(site_packages_path):
-    os.makedirs(site_packages_path)
+    import site
+    import importlib
 
-sys.path.append(site_packages_path)
+    sys.path.append(site.getusersitepackages())
 
-try:
-    import xxhash
-    from PIL import Image as pillow_image
-except:
-    import subprocess
-    python_binary =  bpy.app.binary_path_python
-    # sys.executable ?
-    try:
+    modules_to_install = [module[1] for module in packages if not importlib.util.find_spec(module[0])]   
+
+    if modules_to_install:
+        import subprocess
+
+        if bpy.app.version < (2,91,0):
+            python_binary = bpy.app.binary_path_python
+        else:
+            python_binary = sys.executable
+
         subprocess.run([python_binary, '-m', 'ensurepip'], check=True)
-        # subprocess.run([python_binary, '-m', 'ensurepip', '--upgrade'], check=True)
-        # subprocess.run([python_binary, '-m', 'pip', 'install', '--upgrade', 'pip'], check=True)
-        subprocess.run([python_binary, '-m', 'pip', 'install', 'xxhash', '-t', site_packages_path], check=True)
-        subprocess.run([python_binary, '-m', 'pip', 'install', 'Pillow', '-t', site_packages_path], check=True)
-    except subprocess.SubprocessError as error:
-        print(error.output)
+        subprocess.run([python_binary, '-m', 'pip', 'install', *modules_to_install, "--user"], check=True)
 
+ensure_site_packages([
+    ("PIL", "Pillow"),
+    # ("imagesize", "imagesize"),
+    ("xxhash","xxhash"),
+    # ("lxml", "lxml"),
+    ("bs4","beautifulsoup4"),
+    # ("tldextract", "tldextract"),
+    ("validators", "validators")
+])
 
-from . lib import *
-from . ui import *
+from . addon_preferences_ui import *
+from . view_3d_operator import *
+from . view_3d_ui import *
+from . shader_editor_operator import *
+from . shader_editor_ui import *
+from . data import *
 
-classes = (
-    MATAPP_OT_apply_material, 
-    MATAPP_properties, 
-    MATAPP_OT_height_blend, 
-    MATAPP_PT_tools, 
-    MATAPP_OT_make_links, 
-    MATAPP_OT_detail_blend, 
-    MATAPP_OT_ensure_adaptive_subdivision, 
-    MATAPP_OT_normalize_height, 
-    MATAPP_OT_bake_defaults,
-    MATAPP_OT_append_extra_nodes,
-    MATAPP_OT_save_material_settings,
-    MATAPP_OT_load_material_settings,
-    MATAPP_OT_open_in_file_browser,
-    MATAPP_OT_transfer_settings,
-    MATAPP_OT_convert_materail,
-    MATAPP_OT_restore_default_settings,
-    MATAPP_OT_restore_factory_settings
-)
+classes = [module for name, module in locals().items() if name.startswith("ATOOL_")]
 
 def register():
+    start = timer()
+
+    addon_updater_ops.register(bl_info)
+
     for c in classes:
         bpy.utils.register_class(c)
-    bpy.types.Scene.matapp_properties = bpy.props.PointerProperty(type=MATAPP_properties)
+
+    addon_preferences = bpy.context.preferences.addons[__package__].preferences
+    wm = bpy.types.WindowManager
+    wm.at_asset_data = AssetData(addon_preferences.library_path, addon_preferences.auto_path)
+    wm.at_asset_previews = bpy.props.EnumProperty(items=get_browser_items)
+    wm.at_asset_info = bpy.props.PointerProperty(type=ATOOL_PROP_asset_info)
+    wm.at_browser_asset_info = bpy.props.PointerProperty(type=ATOOL_PROP_browser_asset_info)
+    wm.at_template_info = bpy.props.PointerProperty(type=ATOOL_PROP_template_info)
+    wm.at_search = bpy.props.StringProperty(name="", description="Search", update=update_search)
+    wm.at_current_page = bpy.props.IntProperty(name="Page", description="Page", update=update_page, min=1, default=1)
+    wm.at_assets_per_page = bpy.props.IntProperty(name="Assets Per Page", update=update_assets_per_page, min=1, default=24, soft_max=104)
+
+    register_time = timer() - start
+    print("AT register time:\t", register_time)
+    print("AT all time:\t\t", register_time + init_time)
+
 
 def unregister():
     for c in classes:
         bpy.utils.unregister_class(c)
-    del bpy.types.Scene.matapp_properties
+
+    wm = bpy.types.WindowManager
+    del wm.at_asset_data
+    del wm.at_asset_previews
+    del wm.at_asset_info
+    del wm.at_browser_asset_info
+    del wm.at_template_info
+    del wm.at_search
+    del wm.at_current_page
+    del wm.at_assets_per_page
+
+init_time = timer() - start
+print("AT __init__ time:\t", init_time)

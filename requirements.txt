@@ -1,0 +1,3 @@
+Pillow
+xxhash
+beautifulsoup4
