@@ -234,16 +234,16 @@ class Asset():
             url_files = [url for url in url_files if url.exists() and url.type == "url"]
             for url_file in url_files:
                 url = url_file.data
-                move_to_folder(str(url_file), extra_folder)
+                move_to_folder(url_file, extra_folder)
 
             if url:
                 info, preview = get_info()
 
             if file.type == "zip":
-                extract_zip(str(file), id_path.path)
-                move_to_folder(str(file), archive_folder)
+                extract_zip(file, id_path.path)
+                move_to_folder(file, archive_folder)
             else:
-                move_to_folder(str(file), id_path.path)
+                move_to_folder(file, id_path.path)
         else:
             id_path = PseudoDirEntry(move_to_folder(path.path, asset_data_path))
 
@@ -575,6 +575,7 @@ class AssetData():
         :no_icon
         :more_tags
         :no_url
+        :new
 
         """
 
@@ -595,6 +596,9 @@ class AssetData():
 
         if re.match(r"(\s|^):no_url(\s|$)", search_query, flags=re.IGNORECASE):
             return [asset for asset in assets if not asset.info["url"]]
+
+        if re.match(r"(\s|^):new(\s|$)", search_query, flags=re.IGNORECASE):
+            return sorted(list(self.data.values()), key=lambda a: os.path.getmtime(a.json_path), reverse=True)
 
         search_query = set(search_query.lower().split())
 

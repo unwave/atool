@@ -9,3 +9,4 @@ local_resources/
 atool_updater/
 .vscode/
 config.json
+__cache__.db

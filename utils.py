@@ -7,6 +7,7 @@ import shutil
 import functools
 import pathlib
 import re
+import operator
 
 IMAGE_EXTENSIONS = { ".bmp", ".jpeg", ".jpg", ".jp2", ".j2c", ".tga", ".cin", ".dpx", ".exr", ".hdr", ".sgi", ".rgb", ".bw", ".png", ".tiff", ".tif", ".psd", ".dds"}
 GEOMETRY_EXTENSIONS = {}
@@ -39,7 +40,7 @@ def data(self):
         with self.open(encoding="utf-8") as info_file:
             match = re.search(r"blendswap.com\/blends\/view\/\d+", info_file.read())
             if match:
-                return match.group(1)
+                return match.group(0)
     return None
 
 
@@ -58,6 +59,10 @@ def file_type(self):
             return "__icon__"
         elif self.name == "BLENDSWAP_LICENSE.txt":
             return "blendswap_info"
+        elif self.name.lower().endswith("license.html"):
+            with self.open(encoding="utf-8") as info_file:
+                if re.search(r"blendswap.com\/blends\/view\/\d+", info_file.read()):
+                    return "blendswap_info"
         elif self.suffix == ".sbsar":
             return "sbsar"
         elif self.suffix == ".zip":
@@ -120,6 +125,7 @@ class File_Filter:
             return [item for item in self.data.values() if item.suffix in extension]
 
 
+
 def move_to_folder(file: typing.Union[str, os.DirEntry], folder:str, create=True):
     if create:
         os.makedirs(folder, exist_ok=True)
@@ -127,10 +133,15 @@ def move_to_folder(file: typing.Union[str, os.DirEntry], folder:str, create=True
         new_path = os.path.join(folder, os.path.basename(file))
         shutil.move(file, new_path)
         return new_path
-    else:
+    elif isinstance(file, pathlib.PurePath):
+        new_path = os.path.join(folder, file.name)
+        shutil.move(str(file), new_path)
+        return new_path
+    elif isinstance(file, (os.DirEntry, PseudoDirEntry)):
         new_path = os.path.join(folder, file.name)
         shutil.move(file.path, new_path)
         return new_path
+    raise TypeError(f"The function move_to_folder does not support {str(file)} of type {type(file)}.")
 
 def read_local_file(name, auto=True):
     path = os.path.join(os.path.dirname(os.path.realpath(__file__)), name)
@@ -189,7 +200,7 @@ class Item_Location:
     
     @property
     def string(self):
-        return "".join(("".join(("[", "".join(("\"" ,fragment, "\"")) if isinstance(fragment, str) else str(fragment),"]")) for fragment in self.path))
+        return "".join(("".join(("[", fragment.__repr__(),"]")) for fragment in self.path))
     
     @property
     def data(self):
@@ -211,21 +222,41 @@ class Item_Location:
             parent = parent[fragment]
         return parent
 
-def locate_item(iter, item, is_dict_key = False, return_as = None):
+
+def locate_item(iter, item, is_dict_key = False, return_as = None, mode = 'eq'):
+    """
+    `type`: 'any' can be a key, a value
+    `mode`: operator's 'eq', 'contains', etc.
+    """
+    
+    def contains(a, b):
+        if type(a) == str and type(b) == str:
+            return operator.contains(b.lower(), a.lower())
+        else:
+            return operator.eq(a, b)
+    
+    if mode == 'eq':
+        comparison = operator.eq
+    elif mode == 'contains':
+        comparison = contains
+    else:
+        comparison = getattr(operator, mode)
+    
 
     def locate_value(iter, item, path = []):
         if isinstance(iter, (list, tuple)):
             for index, value in enumerate(iter):
-                if item == value:
-                    yield path + [index]
-                elif isinstance(value, (list, dict, tuple)):
+                if isinstance(value, (list, dict, tuple)):
                     yield from locate_value(value, item, path + [index])
+                elif comparison(item, value):
+                    yield path + [index]
         elif isinstance(iter, dict):
             for name, value in iter.items():
-                if item == value:
-                    yield path + [name]
                 if isinstance(value, (list, dict, tuple)):
                     yield from locate_value(value, item, path + [name])
+                elif comparison(item, value):
+                    yield path + [name]
+                
 
     def locate_key(iter, item, path = []):
         if isinstance(iter, (list, tuple)):
@@ -233,10 +264,11 @@ def locate_item(iter, item, is_dict_key = False, return_as = None):
                 yield from locate_key(value, item, path + [index])
         elif isinstance(iter, dict):
             for key, value in iter.items():
-                if item == key:
-                    yield path + [key]
                 if isinstance(value, (list, dict, tuple)):
                     yield from locate_key(value, item, path + [key])
+                elif comparison(item, key):
+                    yield path + [key]
+                
     
     def locate_key_and_value(iter, item, path = []):
         if isinstance(iter, (list, tuple)):
@@ -244,11 +276,11 @@ def locate_item(iter, item, is_dict_key = False, return_as = None):
                 yield from locate_key_and_value(value, item, path + [index])
         elif isinstance(iter, dict):
             for key, value in iter.items():
-                if item[0] == key and item[1] == value:
-                    yield path + [key]
                 if isinstance(value, (list, dict, tuple)):
                     yield from locate_key_and_value(value, item, path + [key])
-
+                elif  comparison(item[0], key) and  comparison(item[1], value):
+                    yield path + [key]
+                
     
     if isinstance(item, tuple):
         locate = locate_key_and_value
@@ -259,3 +291,4 @@ def locate_item(iter, item, is_dict_key = False, return_as = None):
         return [getattr(Item_Location(path, iter), return_as) for path in locate(iter, item)]
     else:
         return [Item_Location(path, iter) for path in locate(iter, item)]
+        

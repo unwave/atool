@@ -32,6 +32,7 @@ class ATOOL_PT_tools(bpy.types.Panel):
 
         column.operator("atool.normalize_height_range", text = "Normalize Image", icon='SEQ_HISTOGRAM')
         column.operator("atool.ensure_adaptive_subdivision", text = "Ensure Adaptive Subdivision", icon='MOD_NOISE')
+        column.operator("atool.set_uv_scale_multiplier", icon='UV_DATA')
         column.separator()
 
         column.operator("atool.open_in_file_browser", text = "Open File Browser", icon='FILEBROWSER')

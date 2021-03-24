@@ -1,4 +1,7 @@
 import bpy
+import bmesh
+import math
+from mathutils.geometry import area_tri #type: ignore
 from bpy_extras.io_utils import ImportHelper
 
 import sys
@@ -1105,6 +1108,55 @@ class ATOOL_OT_transfer_settings(bpy.types.Operator, Shader_Editor_Poll):
 
         return {'FINISHED'}
 
+def get_uv_scale_multiplier(object, uv = None, transform = False, triangulate = False):
+    bm = bmesh.new()
+    bm.from_object(object, bpy.context.evaluated_depsgraph_get())
+    
+    if transform:
+        bm.transform(object.matrix_world)
+    if triangulate:
+        bmesh.ops.triangulate(bm, faces=bm.faces)
+
+    mesh_area = sum(f.calc_area() for f in bm.faces)
+
+    if uv:
+        uv_layer = bm.loops.layers.uv[uv]
+    else:
+        uv_layer = bm.loops.layers.uv.active
+
+    uv_layer = bm.loops.layers.uv.active
+    uv_area = sum(area_tri(*(vert[uv_layer].uv for vert in face)) for face in bm.calc_loop_triangles())
+    
+    bm.free()
+    
+    return math.sqrt(mesh_area/uv_area)
+
+
+class ATOOL_OT_set_uv_scale_multiplier(bpy.types.Operator, Shader_Editor_Poll):
+    bl_idname = "atool.set_uv_scale_multiplier"
+    bl_label = "Match World Scale"
+    bl_description = "Match the active mesh UV scale to the world scale"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+
+        object = context.object
+
+        if not object.data or not object.data.uv_layers:
+            self.report({'INFO'}, "The object has not uv layers.")
+            return {'CANCELLED'}
+
+        groups = get_all_lt_groups_from_selection(self, context)
+        if not groups:
+            return {'CANCELLED'}
+        
+        multiplier = get_uv_scale_multiplier(context.object)
+        for group in groups:
+            group.inputs["Scale"].default_value = multiplier
+
+        return {'FINISHED'}
+        
+
 # def get_dominant_color(image_path):
 #     image = pillow_image.open(image_path)
 #     image.thumbnail((256, 256), pillow_image.HAMMING)
@@ -1311,7 +1363,7 @@ def setup_material(operator, context):
     elif final_aspect_ratio > 1:
         inputs["Y Scale"].default_value = final_aspect_ratio
     elif final_aspect_ratio < 1:
-        inputs["X Scale"].default_value = final_aspect_ratio
+        inputs["X Scale"].default_value = 1/final_aspect_ratio
 
     if flags["albedo"]:
         if flags["ambient_occlusion"]:
