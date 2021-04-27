@@ -30,7 +30,10 @@
 				"nrm",
 				"n",
 				"ddn",
-				"nm"
+				"nm",
+				"directx",
+				"dx_normal",
+				"gl_normal"
 			],
 			"albedo":[
 				"albedo",
@@ -50,6 +53,7 @@
 				"basecolor",
 				"base_colour",
 				"base_color",
+				"bc",
 				"colour",
 				"color",
 				"clr",
@@ -60,6 +64,7 @@
 			"metallic":[
 				"metallic",
 				"met",
+				"mt",
 				"m",
 				"mtllc",
 				"metal",

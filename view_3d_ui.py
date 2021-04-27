@@ -1,62 +1,11 @@
 import bpy
+from . shader_editor_operator import draw_import_config
 
-# import inspect
-# print(*inspect.getmembers(self), sep="\n")
-
-# draw_count = 0
-# global draw_count
-# print("Draw count: ", draw_count)
-# draw_count += 1
 
 current_asset_id = None
 current_icon_id = None
 current_browser_asset_id = None
 
-class ATOOL_PT_object(bpy.types.Panel):
-    bl_idname = "ATOOL_PT_object"
-    bl_label = "ATool"
-    bl_category = "AT"
-    bl_space_type = 'PROPERTIES'
-    bl_region_type = 'WINDOW'
-    bl_context = "object"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    @classmethod
-    def poll(cls, context):
-        return bool(context.object.get("atool_id"))
-
-    def draw(self, context):
-
-        column = self.layout.column()
-        atool_id = context.object["atool_id"]
-
-        global current_asset_id
-        global current_icon_id
-        asset_info = context.window_manager.at_asset_info
-        
-        if current_asset_id != atool_id:
-            asset_data = context.window_manager.at_asset_data
-            active_asset = asset_data.data[atool_id]
-
-            icon = asset_data.preview_collection.get(active_asset.icon)
-            if not icon:
-                icon = asset_data.preview_collection.load(active_asset.icon, active_asset.icon, 'IMAGE')
-
-            asset_info["name"] = active_asset.info["name"]
-            asset_info["url"] = active_asset.info["url"]
-            asset_info["author"] = active_asset.info["author"]
-            asset_info["licence"] = active_asset.info["licence"]
-            asset_info["tags"] = ' '.join(active_asset.info["tags"])
-
-            current_asset_id = atool_id
-            current_icon_id = icon.icon_id
-
-        column.template_icon(icon_value = current_icon_id, scale=5.8)
-        column.prop(asset_info, "name")
-        column.prop(asset_info, "url")
-        column.prop(asset_info, "author")
-        column.prop(asset_info, "licence")
-        column.prop(asset_info, "tags")
 
 class ATOOL_PT_search(bpy.types.Panel):
     bl_idname = "ATOOL_PT_search"
@@ -70,6 +19,37 @@ class ATOOL_PT_search(bpy.types.Panel):
         # , text='Go to page:'
         column.prop(context.window_manager, "at_current_page")
         column.prop(context.window_manager, "at_assets_per_page")
+
+class ATOOL_PT_import_config(bpy.types.Panel):
+    bl_idname = "ATOOL_PT_import_config"
+    bl_label = "Material Import Config"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "WINDOW"
+ 
+    def draw(self, context):
+        layout = self.layout
+        layout.alignment = 'LEFT'
+        draw_import_config(context, layout)
+
+class ATOOL_MT_actions(bpy.types.Menu):
+    bl_idname = "ATOOL_MT_actions"
+    bl_label = "Actions"
+
+    def draw(self, context):
+        layout = self.layout
+        browser_asset_info = context.window_manager.at_browser_asset_info
+        layout.prop(browser_asset_info, "is_shown", text = "Show Info")
+        layout.prop(browser_asset_info, "is_id_shown", text = "Show ID Info")
+        layout.operator("atool.open_info", icon='FILE_TEXT')
+        layout.separator()
+        layout.operator("atool.reload_asset", text='Reload', icon='FILE_REFRESH').do_reimport = False
+        layout.operator("atool.get_web_info", icon='INFO')
+        layout.operator("atool.reload_asset", text='Reimport', icon='IMPORT').do_reimport = True
+        layout.separator()
+        layout.operator("atool.process_auto", text = "Process Auto Folder", icon="NEWFOLDER")
+        layout.operator("atool.get_web_asset", icon="URL")
+        layout.separator()
+        layout.popover("ATOOL_PT_import_config")
 
 class ATOOL_PT_panel(bpy.types.Panel):
     bl_idname = "ATOOL_PT_panel"
@@ -108,7 +88,7 @@ class ATOOL_PT_panel(bpy.types.Panel):
         previous_and_next_buttons.scale_x = 3
         previous_and_next_buttons.operator("atool.navigate", icon ='FRAME_PREV').button_index = 0
         previous_and_next_buttons.operator("atool.navigate", icon ='TRIA_LEFT').button_index = 1
-        previous_and_next_buttons.operator("atool.open_gallery", icon='FILE_IMAGE')
+        previous_and_next_buttons.operator("atool.open_gallery", text='', icon='FILE_IMAGE')
         previous_and_next_buttons.operator("atool.navigate", icon ='TRIA_RIGHT').button_index = 2
         previous_and_next_buttons.operator("atool.navigate", icon ='FRAME_NEXT').button_index = 3
 
@@ -116,15 +96,13 @@ class ATOOL_PT_panel(bpy.types.Panel):
         browser_and_side_buttons.template_icon_view(wm, "at_asset_previews", show_labels=True, scale=6.0, scale_popup=5.0)
         
         side_buttons = browser_and_side_buttons.column(align=True)
-        side_buttons.operator("atool.open_asset_folder", icon='FILE_FOLDER')
-        side_buttons.operator("atool.pin_asset", icon='PINNED')
-        side_buttons.operator("atool.reload_asset", icon='FILE_REFRESH')
-        side_buttons.prop(browser_asset_info, "is_shown", icon_only=True, icon = "INFO")
+        side_buttons.operator("atool.open_asset_folder", text='', icon='FILE_FOLDER')
+        side_buttons.operator("atool.pin_asset", text='', icon='PINNED')
+        side_buttons.operator("atool.pin_active_asset", text='', icon='EYEDROPPER')
+        side_buttons.menu('ATOOL_MT_actions', text='', icon='DOWNARROW_HLT')
 
         column.separator()
         column.operator("atool.import_asset")
-        column.operator("atool.process_auto")
-        column.operator("atool.get_info_from_url")
         column.separator()
 
         if browser_asset_info.is_shown:
@@ -136,38 +114,64 @@ class ATOOL_PT_panel(bpy.types.Panel):
                 try:
                     library_browser_asset = asset_data.data[library_browser_asset_id]
 
-                    browser_asset_info["name"] = library_browser_asset.info["name"]
-                    browser_asset_info["url"] = library_browser_asset.info["url"]
-                    browser_asset_info["author"] = library_browser_asset.info["author"]
-                    browser_asset_info["licence"] = library_browser_asset.info["licence"]
-                    browser_asset_info["tags"] = ' '.join(library_browser_asset.info["tags"])
+                    browser_asset_info["id"] = library_browser_asset.id
+                    browser_asset_info["name"] = library_browser_asset.info.get("name", "")
+                    browser_asset_info["url"] = library_browser_asset.info.get("url", "")
+                    browser_asset_info["author"] = library_browser_asset.info.get("author", "")
+                    browser_asset_info["author_url"] = library_browser_asset.info.get("author_url", "")
+                    browser_asset_info["licence"] = library_browser_asset.info.get("licence", "")
+                    browser_asset_info["licence_url"] = library_browser_asset.info.get("licence_url", "")
+                    browser_asset_info["description"] = library_browser_asset.info.get("description", "")
+                    browser_asset_info["tags"] = ' '.join(library_browser_asset.info.get("tags", []))
                 except:
+                    browser_asset_info["id"] = ""
                     browser_asset_info["name"] = ""
                     browser_asset_info["url"] = ""
                     browser_asset_info["author"] = ""
+                    browser_asset_info["author_url"] = ""
                     browser_asset_info["licence"] = ""
+                    browser_asset_info["licence_url"] = ""
+                    browser_asset_info["description"] = ""
                     browser_asset_info["tags"] = ""
 
-            name_row = column.row(align=True)
-            name_row.operator("atool.search_name", icon = 'SYNTAX_OFF', emboss=False)
-            name_row.prop(browser_asset_info, "name", text="")
+            if browser_asset_info.is_id_shown:
+                row = column.row(align=True)
+                row.operator("atool.open_asset_folder", text='', icon = 'FILE_FOLDER', emboss=False)
+                row.prop(browser_asset_info, "id", text="")
 
-            url_row = column.row(align=True)
-            url_row.operator("atool.open_url", icon = 'URL', emboss=False)
-            url_row.prop(browser_asset_info, "url", text="")
+            row = column.row(align=True)
+            row.operator("atool.open_attr", icon = 'SYNTAX_OFF', emboss=False).attr_name = "name"
+            row.prop(browser_asset_info, "name", text="")
 
-            author_row = column.row(align=True)
-            author_row.operator("atool.search_author", icon = 'USER', emboss=False)
-            author_row.prop(browser_asset_info, "author", text="")
+            row = column.row(align=True)
+            row.operator("atool.open_attr", icon = 'FILTER', emboss=False).attr_name = "tags"
+            row.prop(browser_asset_info, "tags", text="")
 
-            licence_row = column.row(align=True)
-            licence_row.operator("atool.search_licence", icon = 'COPY_ID', emboss=False)
-            licence_row.prop(browser_asset_info, "licence", text="")
+            row = column.row(align=True)
+            row.operator("atool.open_attr", icon = 'URL', emboss=False).attr_name = "url"
+            row.prop(browser_asset_info, "url", text="")
 
-            tags_tow = column.row(align=True)
-            tags_tow.operator("atool.search_tags", icon = 'FILTER', emboss=False)
-            tags_tow.prop(browser_asset_info, "tags", text="")
-               
+            row = column.row(align=True)
+            row.operator("atool.open_attr", icon = 'TEXT', emboss=False).attr_name = "description"
+            row.prop(browser_asset_info, "description", text="")
+
+            row = column.row(align=True)
+            row.operator("atool.open_attr", icon = 'USER', emboss=False).attr_name = "author"
+            row.prop(browser_asset_info, "author", text="")
+
+            # row = column.row(align=True)
+            row.operator("atool.open_attr", icon = 'LINKED', emboss=False).attr_name = "author_url"
+            row.prop(browser_asset_info, "author_url", text="")
+
+            row = column.row(align=True)
+            row.operator("atool.open_attr", icon = 'COPY_ID', emboss=False).attr_name = "licence"
+            row.prop(browser_asset_info, "licence", text="")
+
+            # row = column.row(align=True)
+            row.operator("atool.open_attr", icon = 'LINKED', emboss=False).attr_name = "licence_url"
+            row.prop(browser_asset_info, "licence_url", text="")
+
+
 
 class ATOOL_PT_save_asset(bpy.types.Panel):
     bl_idname = "ATOOL_PT_save_asset"
@@ -205,7 +209,8 @@ class ATOOL_PT_view_3d_tools(bpy.types.Panel):
         column.operator("atool.split_blend_file")
         column.operator("atool.distibute")
         column.operator("atool.match_displacement")
-
+        column.operator("atool.dolly_zoom")
+        
 
 def update_ui():
     global current_asset_id

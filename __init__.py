@@ -12,10 +12,29 @@ bl_info = {
 from timeit import default_timer as timer
 start = timer()
 
+
+# https://docs.python.org/3/howto/logging.html
+# https://docs.python.org/3/library/logging.html
+import logging
+log = logging.getLogger("atool")
+log.setLevel(logging.DEBUG)
+
+log_handler = logging.StreamHandler()
+log_handler.setLevel(logging.DEBUG)
+log_formatter = logging.Formatter("Atool %(levelname)s: %(message)s")
+log_handler.setFormatter(log_formatter)
+log.addHandler(log_handler)
+
 import typing
-import bpy
 import sys
+import threading
+import time
+
+import bpy
+from bpy.app.handlers import persistent
+
 from . import addon_updater_ops
+
 
 def ensure_site_packages(packages: typing.List[typing.Tuple[str, str]]):
     """ `packages`: list of tuples (<import name>, <pip name>) """
@@ -48,7 +67,11 @@ ensure_site_packages([
     # ("lxml", "lxml"),
     ("bs4","beautifulsoup4"),
     # ("tldextract", "tldextract"),
-    ("validators", "validators")
+    ("validators", "validators"),
+    ("pyperclip", "pyperclip"),
+    # ("pathos", "pathos"),
+    ("cv2", "opencv-contrib-python-headless"),
+    ("cached_property", "cached-property")
 ])
 
 from . addon_preferences_ui import *
@@ -58,7 +81,11 @@ from . shader_editor_operator import *
 from . shader_editor_ui import *
 from . data import *
 
-classes = [module for name, module in locals().items() if name.startswith("ATOOL_")]
+config = read_local_file("config.json")
+if config and config.get("dev_mode"):
+    from . dev_tools import *
+
+classes = [module for name, module in locals().items() if name.startswith("ATOOL")]
 
 def register():
     start = timer()
@@ -72,16 +99,40 @@ def register():
     wm = bpy.types.WindowManager
     wm.at_asset_data = AssetData(addon_preferences.library_path, addon_preferences.auto_path)
     wm.at_asset_previews = bpy.props.EnumProperty(items=get_browser_items)
-    wm.at_asset_info = bpy.props.PointerProperty(type=ATOOL_PROP_asset_info)
     wm.at_browser_asset_info = bpy.props.PointerProperty(type=ATOOL_PROP_browser_asset_info)
     wm.at_template_info = bpy.props.PointerProperty(type=ATOOL_PROP_template_info)
-    wm.at_search = bpy.props.StringProperty(name="", description="Search", update=update_search)
+    wm.at_import_config = bpy.props.PointerProperty(type=ATOOL_PROP_import_config)
+    wm.at_search = bpy.props.StringProperty(name="", 
+        description= \
+        ':no_icon - with no preview \n'\
+        ':more_tags - less than 4 tags\n'\
+        ':no_url - with no url\n'\
+        ':i - intersection mode, default - subset\n'\
+        'id:<asset id> - find by id'
+        ,update=update_search)
     wm.at_current_page = bpy.props.IntProperty(name="Page", description="Page", update=update_page, min=1, default=1)
     wm.at_assets_per_page = bpy.props.IntProperty(name="Assets Per Page", update=update_assets_per_page, min=1, default=24, soft_max=104)
 
+
+    importing = threading.Thread(target=wm.at_asset_data.update)
+    importing.start()
+
+    def first_search():
+        while importing.is_alive():
+            time.sleep(0.1)
+        wm = bpy.context.window_manager
+        wm.at_search = ""
+        update_search(wm, None)
+
+    @persistent
+    def load_handler(dummy):
+        threading.Thread(target=first_search).start()
+    bpy.app.handlers.load_post.append(load_handler)
+
+
     register_time = timer() - start
-    print("AT register time:\t", register_time)
-    print("AT all time:\t\t", register_time + init_time)
+    log.info("register time:\t" + str(register_time))
+    log.info("all time:\t\t" + str(register_time + init_time))
 
 
 def unregister():
@@ -91,7 +142,6 @@ def unregister():
     wm = bpy.types.WindowManager
     del wm.at_asset_data
     del wm.at_asset_previews
-    del wm.at_asset_info
     del wm.at_browser_asset_info
     del wm.at_template_info
     del wm.at_search
@@ -99,4 +149,4 @@ def unregister():
     del wm.at_assets_per_page
 
 init_time = timer() - start
-print("AT __init__ time:\t", init_time)
+log.info("__init__ time:\t" + str(init_time))

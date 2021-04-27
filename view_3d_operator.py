@@ -1,19 +1,26 @@
-import bpy
-import sys
-import os
-import subprocess
-# import uuid
-# import webbrowser
-
 import itertools
+import math
+import os
+import queue
+import subprocess
+import sys
+import threading
+import typing
 from datetime import datetime
 
-import math
-import mathutils #type: ignore
-# import numpy
+import bpy
+import mathutils
 
-from .data import get_browser_items
-from .shader_editor_operator import apply_material
+from . import image_utils
+from . import type_definer
+from . data import get_browser_items
+from . shader_editor_operator import Material_Import_Properties, apply_material, get_definer_config
+from . bl_utils import Reference
+
+# import webbrowser
+# import numpy
+# import uuid
+
 
 class Object_Mode_Poll():
     @classmethod
@@ -228,91 +235,7 @@ class ATOOL_OT_move_to_library(bpy.types.Operator, Object_Mode_Poll):
         return {'FINISHED'}
 
 
-class ATOOL_OT_import_asset(bpy.types.Operator, Object_Mode_Poll):
-    bl_idname = "atool.import_asset"
-    bl_label = "Import"
-    bl_description = "Import asset"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    is_y_minus_normal_map: bpy.props.BoolProperty(
-        name="Y- Normal Map",
-        description="Invert the green channel for DirectX style normal maps",
-        default = False
-        )
-    use_triplanar: bpy.props.BoolProperty(
-        name="Triplanar",
-        description="Use triplanar mapping",
-        default = False
-        )
-    use_untiling: bpy.props.BoolProperty(
-        name="Untiling",
-        description="Use untiling to break textures repetition",
-        default = True
-        )
-    ensure_adaptive_subdivision: bpy.props.BoolProperty(
-        name="Ensure Adaptive Subdivision",
-        description="Ensure adaptive subdivision setup for the active object",
-        default = False
-        )
-    preview_dicing_rate: bpy.props.FloatProperty(
-        name="Preview Dicing Rate",
-        default = 1,
-        soft_min=0.5,
-        max=1000
-        )
-    offscreen_dicing_scale: bpy.props.FloatProperty(
-        name="Offscreen Dicing Scale",
-        default = 16,
-        min=1
-        )
-    load_settings: bpy.props.BoolProperty(
-        name="Load Settings",
-        description="Load the imported material's settings",
-        default = True
-        )
-    a_for_ambient_occlusion: bpy.props.BoolProperty(
-        name="A For Ambient Occlusion",
-        description="Solve the ambiguity. The default is A for albedo",
-        default = False
-        )
-    not_rgb_plus_alpha: bpy.props.BoolProperty(
-        name="Not RGB + Alpha",
-        description="An debug cases which excludes RGB+A type combinations. An example to solve: \"Wall_A_\" plus a single channel map name",
-        default = True
-        )
-
-    ignore_by_type: bpy.props.StringProperty(
-        name="Ignore Type",
-        description="Ignore bitmap by type",
-        default = "bump ambient_occlusion"
-        )
-    use_ignore_by_type: bpy.props.BoolProperty(
-        name="Ignore Type",
-        description="Ignore bitmap by type",
-        default = True
-        )
-
-    ignore_by_format: bpy.props.StringProperty(
-        name="Ignore Format",
-        description="Ignore bitmap by file format",
-        default = ".exr"
-        )
-    use_ignore_by_format: bpy.props.BoolProperty(
-        name="Ignore Format",
-        description="Ignore bitmap by file format",
-        default = True
-        )
-
-    prefer_over: bpy.props.StringProperty(
-        name="Prefer Type",
-        description="Prefer one type over another and ignore the latter",
-        default = "roughness-gloss albedo-diffuse"
-        )
-    use_prefer_over: bpy.props.BoolProperty(
-        name="Prefer Type",
-        description="Prefer one type over another and ignore the latter",
-        default = True
-        )
+class Blend_Import:
 
     link: bpy.props.BoolProperty(
         name="Link", 
@@ -325,49 +248,107 @@ class ATOOL_OT_import_asset(bpy.types.Operator, Object_Mode_Poll):
         default = "#"
         )
 
+    def draw_blend_import(self, layout):
+        layout.prop(self, "link")
+        layout.prop(self, "ignore")
+
+    def import_blend(self, context):
+        self.blend: str
+        self.atool_id: str
+
+        with bpy.data.libraries.load(self.blend, link = self.link) as (data_from, data_to):
+            data_to.collections = data_from.collections
+            data_to.objects = data_from.objects
+            
+        imported_library = None
+        for library in bpy.data.libraries:
+            if library.filepath == self.blend:
+                imported_library = library
+                if not (data_to.collections or data_to.objects):
+                    self.report({'INFO'}, "Nothing to import from the blend file.")
+                    bpy.data.libraries.remove(library)
+                    return {'FINISHED'}
+                library_version = library.version
+                if library_version < (2,80,0):
+                    report = "2.79- blend file."
+                    if data_to.collections:
+                        report += f" {len(data_to.collections)} groups are imported as collections."
+                    self.report({'INFO'}, report)
+        
+        objects = []
+        for object in data_to.objects:
+            if self.ignore and object.name.startswith(self.ignore):
+                bpy.data.objects.remove(object)
+            else:
+                objects.append(object)
+
+        def add_object(object, collection):
+            object["atool_id"] = self.atool_id
+
+            if self.link:
+                object_overried = object.override_create(remap_local_usages=False)
+                object_overried["atool_id"] = self.atool_id
+                collection.objects.link(object_overried)
+                object_overried.select_set(True)
+                return object_overried
+            else:
+                collection.objects.link(object)
+                object.select_set(True)
+                return object
+
+        collection_objects = []
+        for collection in data_to.collections:
+
+            if self.ignore and collection.name.startswith(self.ignore):
+                for object in collection.all_objects:
+                    bpy.data.objects.remove(object)
+                    objects.remove(object)
+                bpy.data.collections.remove(collection)
+                continue
+
+            new_collection = bpy.data.collections.new(collection.name)
+            context.scene.collection.children.link(new_collection)
+
+            for object in collection.all_objects:
+                collection_objects.append(object)
+                add_object(object, new_collection)
+        
+        for object in objects:
+            if object in collection_objects:
+                continue
+            add_object(object, context.collection)
+
+        if not self.link:
+            return {'FINISHED'}
+
+        imported_objects = {object.name: object for object in objects}
+
+        for object in imported_objects.values():
+            object.use_fake_user = False
+            parent = object.parent
+            if parent and parent.library == imported_library:
+                object.parent = imported_objects.get(parent.name)
+
+        return {'FINISHED'}
+
+
+class ATOOL_OT_import_asset(bpy.types.Operator, Object_Mode_Poll, Material_Import_Properties, Blend_Import):
+    bl_idname = "atool.import_asset"
+    bl_label = "Import"
+    bl_description = "Import asset"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    images: typing.List[image_utils.Image]
+
     def draw(self, context):
         layout = self.layout
         # layout.use_property_split = True
         layout.alignment = 'LEFT'
 
         if self.asset_type == 'material':
-            layout.alignment = 'LEFT'
-
-            layout.prop(self, "is_y_minus_normal_map")
-            layout.prop(self, "use_untiling")
-            layout.prop(self, "use_triplanar")
-
-            layout.separator()
-
-            layout.prop(self, "load_settings")
-
-            layout.separator()
-
-            layout.prop(self, "ensure_adaptive_subdivision")
-            if self.ensure_adaptive_subdivision:
-                layout.prop(self, "preview_dicing_rate")
-                layout.prop(self, "offscreen_dicing_scale")
-
-            layout.separator()
-
-            layout.prop(self, "a_for_ambient_occlusion")
-            layout.prop(self, "not_rgb_plus_alpha")
-
-            layout.prop(self, "use_ignore_by_type")
-            if self.use_ignore_by_type:
-                layout.prop(self, "ignore_by_type", text='')
-
-            layout.prop(self, "use_ignore_by_format")
-            if self.use_ignore_by_format:
-                layout.prop(self, "ignore_by_format", text='')
-
-            layout.prop(self, "use_prefer_over")
-            if self.use_prefer_over:
-                layout.prop(self, "prefer_over", text='')
-
+            self.draw_material_import(layout)
         elif self.asset_type == 'blend':
-            layout.prop(self, "link")
-            layout.prop(self, "ignore")
+            self.draw_blend_import(layout)
 
     def invoke(self, context, event):
 
@@ -377,124 +358,102 @@ class ATOOL_OT_import_asset(bpy.types.Operator, Object_Mode_Poll):
         if not asset:
             return {'CANCELLED'}
         self.asset = asset
+        self.atool_id = asset.id
 
         blends = [file.path for file in os.scandir(asset.path) if file.path.endswith(".blend")]
         if blends:
-            self.latest_blend = max(blends, key=os.path.getmtime)
+            self.blend = max(blends, key=os.path.getmtime)
             self.asset_type = 'blend'
             return self.execute(context)
 
-        self.file_paths = asset.get_imags()
-        if self.file_paths:
+        images = asset.get_imags()
+        if images:
+
+            self.object = None
+            self.material = None
+
+            object = context.object
+            if object:
+                self.object = Reference(object)
+                material = object.active_material
+                if material:
+                    self.material = Reference(material)
+
             self.asset_type = 'material'
-            # return self.execute(context)
-            return context.window_manager.invoke_props_dialog(self, width = 400)
-            
-        self.report({'INFO'}, "Nothing to import.")
-        return {'CANCELLED'}
 
-    def execute(self, context):
-
-        asset = self.asset
-        atool_id = asset.id
-
-        if self.asset_type == 'material':
+            info = self.asset.info
 
             self.height_scale = None
-            dimensions = asset.info.get("dimensions")
+            dimensions = info.get("dimensions")
             if dimensions:
                 x, y, z = dimensions
                 self.height_scale = z * min(x, y)
 
-            self.asset_name = asset.info.get("name")
-            self.atool_id = atool_id
+            self.asset_name = info.get("name")
 
-            return apply_material(self, context)
-
-        elif self.asset_type == 'blend':
-
-            latest_blend = self.latest_blend
-
-            with bpy.data.libraries.load(latest_blend) as (data_from, data_to): pass
-
-            imported_library = None
-            library_version = None
-            for library in bpy.data.libraries:
-                if library.filepath == latest_blend:
-                    library_version = library.version
-                    imported_library = library
-                    break
-            assert imported_library != None, "The working library not found."
-
-            with bpy.data.libraries.load(latest_blend, link = self.link) as (data_from, data_to):
+            config = get_definer_config(context)
             
-                if library_version < (2,80,0) or not data_from.collections:
-                    is_importing_objects = True
-                    data_to.objects = [object for object in data_from.objects if not object.startswith(self.ignore)]
-                else: # does not import root collection objects!
-                    is_importing_objects = False
-                    data_to.collections = [collection for collection in data_from.collections if not collection.startswith(self.ignore)]
+            self.queue = queue.Queue()
+            config["queue"] = self.queue
+            config["asset"] = self.asset
 
-            if not data_to.objects and not data_to.collections:
-                self.report({'INFO'}, "Nothing to import from the blend file.")
-                bpy.data.libraries.remove(imported_library)
-                return {'CANCELLED'}
+            self.process = threading.Thread(target=type_definer.define, args=(images, config))
+            self.process.start()
 
-            imported_objects = []
-            if is_importing_objects:
-                for object in data_to.objects:
-                    context.collection.objects.link(object)
-
-                    object["atool_id"] = atool_id
-
-                    if not self.link:
-                        object.select_set(True)
-                        continue
-                    
-                    object_overried = object.override_create(remap_local_usages=True)
-                    object_overried["atool_id"] = atool_id
-                    object_overried.select_set(True)
-
-                    imported_objects.append(object_overried)
-
-            else:
-                for collection in data_to.collections:
-                    
-                    new_collection = bpy.data.collections.new(collection.name)
-                    context.scene.collection.children.link(new_collection)
-
-                    for object in list(collection.all_objects):
-
-                        if object.name.startswith(self.ignore):
-                            bpy.data.objects.remove(object)
-                            continue
-
-                        new_collection.objects.link(object)
-
-                        object["atool_id"] = atool_id
-
-                        if not self.link:
-                            object.select_set(True)
-                            continue
-
-                        object_overried = object.override_create(remap_local_usages=True)
-                        object_overried["atool_id"] = atool_id
-                        object_overried.select_set(True)
-
-                        imported_objects.append(object_overried)
-
-            if not self.link:
-                return {'FINISHED'}
-
-            imported_objects = {object.name: object for object in imported_objects}
-
-            for object in imported_objects.values():
-                object.use_fake_user = False
-                parent = object.parent
-                if parent and parent.library == imported_library:
-                    object.parent = imported_objects.get(parent.name)
+            wm = context.window_manager
+            self._timer = wm.event_timer_add(0.1, window=context.window)
+            wm.modal_handler_add(self)
+            return {'RUNNING_MODAL'}
             
-        return {'FINISHED'}
+        self.report({'INFO'}, "Nothing to import.")
+        return {'CANCELLED'}
+
+    def modal(self, context, event):
+
+        if event.type == 'TIMER':
+            if not self.process.is_alive():
+                self.process.join()
+
+                try:
+                    result = self.queue.get(block=False)[0]
+                except:
+                    self.report({"ERROR"}, "The type definer failed. See the console for the error.")
+                    return {'CANCELLED'}
+
+                for report in result["report"]:
+                    self.report(*report)
+
+                if not result["ok"]:
+                    return {'FINISHED'}
+
+                self.images = result["images"]
+                self.material_name = result["material_name"]
+
+                return self.execute(context)
+                
+        return {'PASS_THROUGH'}
+
+    def execute(self, context):
+
+        if self.asset_type == 'blend':
+            return self.import_blend(context)
+
+        assert self.asset_type == 'material'
+
+        for image in self.images:
+            image.data_block = bpy.data.images.load(filepath = image.path, check_existing=True)
+            image.set_bl_props(image.data_block)
+
+        object = None
+        material = None
+
+        if self.object:
+            object = self.object.get()
+        if self.material:
+            material = self.material.get()
+
+        return apply_material(self, context, object, material)
+
 
 class ATOOL_OT_extract_zips(bpy.types.Operator, Object_Mode_Poll):
     bl_idname = "atool.extract_zips"
@@ -518,7 +477,7 @@ class ATOOL_OT_extract_zips(bpy.types.Operator, Object_Mode_Poll):
 
 class ATOOL_OT_open_gallery(bpy.types.Operator, Object_Mode_Poll):
     bl_idname = "atool.open_gallery"
-    bl_label = ""
+    bl_label = "Open Gallery"
     bl_description = "Open Gallery"
 
     def execute(self, context):
@@ -535,42 +494,35 @@ class ATOOL_OT_open_gallery(bpy.types.Operator, Object_Mode_Poll):
         os_open(self, latest_image)
             
         return {'FINISHED'}
- 
 
-class ATOOL_OT_search_name(bpy.types.Operator, Object_Mode_Poll):
-    bl_idname = "atool.search_name"
-    bl_label = ""
-    bl_description = "Name. Click to open or search"
+
+class ATOOL_OT_pin_active_asset(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.pin_active_asset"
+    bl_label = "Pin Active Asset"
+    bl_description = "Pin the active object if it is an asset"
 
     def execute(self, context):
 
-        asset = get_current_browser_asset(self, context)
+        asset = context.object
         if not asset:
+            self.report({'INFO'}, "No active object.")
             return {'CANCELLED'}
-            
-        web_open(asset.info["name"])
-            
+
+        id = asset.get("atool_id")
+        if not id:
+            self.report({'INFO'}, "The active object is not an asset.")
+            return {'CANCELLED'}
+
+        context.window_manager.at_search = "id:" + id
+
         return {'FINISHED'}
 
-class ATOOL_OT_open_url(bpy.types.Operator, Object_Mode_Poll):
-    bl_idname = "atool.open_url"
+class ATOOL_OT_open_attr(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.open_attr"
     bl_label = ""
-    bl_description = "Url. Click to open or search"
+    bl_description = "Click to open or search"
 
-    def execute(self, context):
-
-        asset = get_current_browser_asset(self, context)
-        if not asset:
-            return {'CANCELLED'}
-
-        web_open(asset.info["url"], is_url = True)
-            
-        return {'FINISHED'}
-
-class ATOOL_OT_search_author(bpy.types.Operator, Object_Mode_Poll):
-    bl_idname = "atool.search_author"
-    bl_label = ""
-    bl_description = "Author. Click to open or search"
+    attr_name: bpy.props.StringProperty()
 
     def execute(self, context):
 
@@ -578,46 +530,24 @@ class ATOOL_OT_search_author(bpy.types.Operator, Object_Mode_Poll):
         if not asset:
             return {'CANCELLED'}
             
-        web_open(asset.info["author"])
-            
-        return {'FINISHED'}
+        attr = asset.info.get(self.attr_name)
 
-
-class ATOOL_OT_search_licence(bpy.types.Operator, Object_Mode_Poll):
-    bl_idname = "atool.search_licence"
-    bl_label = ""
-    bl_description = "Licence. Click to open or search"
-
-    def execute(self, context):
-
-        asset = get_current_browser_asset(self, context)
-        if not asset:
+        if not attr:
+            self.report({'INFO'}, "Empty.")
             return {'CANCELLED'}
-            
-        web_open(asset.info["licence"])
-            
-        return {'FINISHED'}
 
-class ATOOL_OT_search_tags(bpy.types.Operator, Object_Mode_Poll):
-    bl_idname = "atool.search_tags"
-    bl_label = ""
-    bl_description = "Tags. Click to open or search"
-
-    def execute(self, context):
-
-        asset = get_current_browser_asset(self, context)
-        if not asset:
-            return {'CANCELLED'}
-            
-        web_open(' '.join(asset.info["tags"]))
+        if isinstance(attr, list):
+            web_open(' '.join(attr))
+        else:
+            web_open(attr)
             
         return {'FINISHED'}
 
 
 class ATOOL_OT_open_asset_folder(bpy.types.Operator, Object_Mode_Poll):
     bl_idname = "atool.open_asset_folder"
-    bl_label = ""
-    bl_description = "Open Folder"
+    bl_label = "Open Asset Folder"
+    bl_description = "Open Asset Folder"
 
     def execute(self, context):
 
@@ -632,7 +562,7 @@ class ATOOL_OT_open_asset_folder(bpy.types.Operator, Object_Mode_Poll):
 
 class ATOOL_OT_pin_asset(bpy.types.Operator, Object_Mode_Poll):
     bl_idname = "atool.pin_asset"
-    bl_label = ""
+    bl_label = "Pin Asset"
     bl_description = "Pin Asset"
 
     def execute(self, context):
@@ -686,11 +616,12 @@ class ATOOL_OT_navigate(bpy.types.Operator, Object_Mode_Poll):
 
 class ATOOL_OT_reload_asset(bpy.types.Operator, Object_Mode_Poll):
     bl_idname = "atool.reload_asset"
-    bl_label = ""
+    bl_label = "Reload Asset"
     bl_description = "Reload Asset"
 
-    def execute(self, context):
+    do_reimport: bpy.props.BoolProperty(default=False)
 
+    def execute(self, context):
         asset_data = context.window_manager.at_asset_data
 
         library = asset_data.data
@@ -703,7 +634,7 @@ class ATOOL_OT_reload_asset(bpy.types.Operator, Object_Mode_Poll):
             self.report({'INFO'}, "Select an asset.")
             return {'CANCELLED'}
 
-        asset_data.reload_asset(asset_id, context)
+        threading.Thread(target=asset_data.reload_asset, args=(asset_id, context, self.do_reimport)).start()
 
         return {'FINISHED'}
 
@@ -990,7 +921,6 @@ class ATOOL_OT_match_displacement(bpy.types.Operator, Object_Mode_Poll):
                     new_rotation = [a @ b for a, b in zip(current_rotation, random_rotation)]
                     new_rotation =  list(itertools.chain.from_iterable(new_rotation))
                     particles.foreach_set("rotation", new_rotation)
-                    print("rotation set")
                 
                 context.scene.frame_set(2)
                 context.scene.frame_set(1)
@@ -1004,8 +934,8 @@ class ATOOL_OT_match_displacement(bpy.types.Operator, Object_Mode_Poll):
 
         return {'FINISHED'}
 
-class ATOOL_OT_get_info_from_url(bpy.types.Operator, Object_Mode_Poll):
-    bl_idname = "atool.get_info_from_url"
+class ATOOL_OT_get_web_info(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.get_web_info"
     bl_label = "Get Info From Url"
     bl_description = "Get the asset info from the url"
 
@@ -1014,10 +944,61 @@ class ATOOL_OT_get_info_from_url(bpy.types.Operator, Object_Mode_Poll):
         if not asset:
             return {'CANCELLED'}
 
-        report = asset.get_info_from_url()
-        from . data import update_search
-        update_search(context.window_manager, None)
-        self.report({'INFO'}, report)
+        if not asset.info.get("url"):
+            self.report({'INFO'}, "No url.")
+            return {'CANCELLED'}
+
+        threading.Thread(target=asset.get_web_info, args=(context,)).start()
+
+        return {'FINISHED'}
+
+class ATOOL_OT_open_info(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.open_info"
+    bl_label = "Open Info"
+    bl_description = "Open __info__.json"
+
+    def execute(self, context):
+        asset = get_current_browser_asset(self, context)
+        if not asset:
+            return {'CANCELLED'}
+
+        os_open(self, asset.json_path)
+        return {'FINISHED'}
+
+
+class ATOOL_OT_get_web_asset(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.get_web_asset"
+    bl_label = "Download Asset"
+    bl_description = "Download an asset by its URL"
+
+    url: bpy.props.StringProperty(
+        name="URL",
+        options = {'SKIP_SAVE'}
+        )
+    
+    def draw(self, context):
+        layout = self.layout
+        # layout.use_property_decorate = False
+        layout.use_property_split = False
+        # layout.alignment = 'LEFT'
+        layout.prop(self, "url", text='', icon='URL')
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width = 400)
+
+    def execute(self, context):
+
+        asset_data = context.window_manager.at_asset_data
+        if not asset_data.library:
+            self.report({'INFO'}, "No library folder specified.")
+            return {'CANCELLED'}
+
+        if not self.url:
+            self.report({'INFO'}, "No URL specified.")
+            return {'CANCELLED'}
+
+        threading.Thread(target=asset_data.web_get_asset, args=(self.url, context)).start()
+
         return {'FINISHED'}
 
 
@@ -1092,5 +1073,59 @@ class ATOOL_OT_process_auto(bpy.types.Operator, Object_Mode_Poll):
 
         asset_data.update_auto()
         self.report({'INFO'}, f"The auto import is done.")
+
+        return {'FINISHED'}
+
+
+
+class ATOOL_OT_dolly_zoom(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.dolly_zoom"
+    bl_label = "Dolly Zoom"
+    bl_description = "Match the camera distance from the object to the target focal length in the way the screen size of the object is the same"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    focal_length: bpy.props.FloatProperty(
+        name="Focal Length",
+        description="Target focal length",
+        default = 50
+        )
+
+    def execute(self, context):
+
+        selected_objects = context.selected_objects
+
+        if not selected_objects:
+            self.report({'INFO'}, f"No selected objects. Select two objects.")
+            return {'CANCELLED'}
+
+        active_object = context.object
+        if active_object.type != 'CAMERA':
+            self.report({'INFO'}, f"The active object must be a camera.")
+            return {'CANCELLED'}
+
+        if len(selected_objects) == 1:
+            self.report({'INFO'}, f"Only one object is selected. Select two objects.")
+            return {'CANCELLED'}
+
+        camera = active_object
+        objects = context.selected_objects.copy()
+        objects.remove(camera)
+
+        target = objects[0]
+ 
+        dist = (camera.matrix_world.translation - target.matrix_world.translation).length
+
+        fov = camera.data.angle
+        width = 2 * dist * math.tan(fov/2)
+            
+        target_fov = 2 * math.atan(camera.data.sensor_width/(2 * self.focal_length))
+
+        delta = width/(2 * math.tan(target_fov/2))
+
+        delta = mathutils.Vector((0, 0, dist - delta))
+        delta.rotate(camera.matrix_world.to_euler())
+
+        camera.location -= delta
+        camera.data.angle = target_fov
 
         return {'FINISHED'}

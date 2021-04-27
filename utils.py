@@ -18,7 +18,15 @@ class PseudoDirEntry:
     def __init__(self, path):
         self.path = os.path.realpath(path)
         self.name = os.path.basename(self.path)
+    
+    def is_file(self):
+        return os.path.isfile(self.path)
+    
+    def is_dir(self):
+        return os.path.isdir(self.path)
 
+def color_to_gray(color):
+    return 0.2126*color[0] + 0.7152*color[1] + 0.0722*color[2]
 
 @property
 @functools.lru_cache()
@@ -41,6 +49,9 @@ def data(self):
             match = re.search(r"blendswap.com\/blends\/view\/\d+", info_file.read())
             if match:
                 return match.group(0)
+    elif self.type == "__info__":
+        with self.open(encoding="utf-8") as json_file:
+            return json.load(json_file)
     return None
 
 
@@ -95,11 +106,25 @@ pathlib.Path.data = data
 
 class File_Filter:
     def __init__(self, path: os.DirEntry, ignore: typing.Union[str, typing.Iterable[str]]):
-        if isinstance(ignore, str):
-            self.data = {item.name: pathlib.Path(item.path) for item in os.scandir(path.path) if item.name != ignore}
-        else:
-            self.data = {item.name: pathlib.Path(item.path) for item in os.scandir(path.path) if item.name not in ignore}
-        
+        self.path = path.path
+        ignore = {ignore} if isinstance(ignore, str) else set(ignore)
+        self.ignore = ignore
+        self.data = {item.name: pathlib.Path(item.path) for item in os.scandir(path.path) if item.name not in ignore}
+
+    def update(self):
+
+        for name in list(self.data.keys()):
+            if not self.data[name].exists():
+                del self.data[name]
+
+        ignore = self.ignore | set(self.data.keys())
+        for file in os.scandir(self.path):
+            if file.name not in ignore:
+                self.data[file.name] = pathlib.Path(file.path)
+
+    def __iter__(self):
+        return iter(self.get_files())
+    
     def get_files(self):
         return [item for item in self.data.values() if item.is_file()]
         
@@ -107,22 +132,16 @@ class File_Filter:
         return [item for item in self.data.values() if item.is_dir()]
         
     def get_by_type(self, type: typing.Union[str, typing.Iterable[str]]):
-        if isinstance(type, str):
-            return [item for item in self.data.values() if item.type == type]
-        else:
-            return [item for item in self.data.values() if item.type in type]
+        type = {type} if isinstance(type, str) else set(type)
+        return [item for item in self.data.values() if item.type in type]
                
     def get_by_name(self, name: typing.Union[str, typing.Iterable[str]]):
-        if isinstance(type, str):
-            return [item for item in self.data.values() if item.name == name]
-        else:
-            return [item for item in self.data.values() if item.name in name]
+        name = {name} if isinstance(name, str) else set(name)
+        return [item for item in self.data.values() if item.name in name]
             
     def get_by_extension(self, extension: typing.Union[str, typing.Iterable[str]]):
-        if isinstance(extension, str):
-            return [item for item in self.data.values() if item.suffix == extension]
-        else:
-            return [item for item in self.data.values() if item.suffix in extension]
+        extension = {extension} if isinstance(extension, str) else set(extension)
+        return [item for item in self.data.values() if item.suffix in extension]
 
 
 
@@ -168,10 +187,24 @@ def get_files(path, get_folders = False, recursivly = True):
 def deduplicate(list_to_deduplicate: list):
         return list(dict.fromkeys(list_to_deduplicate))
 
+def remove_empty(iterable):
+    if isinstance(iterable, dict):
+        for key in list(iterable.keys()):
+            if not iterable[key]:
+                iterable.pop(key)
+    elif isinstance(iterable, list):
+        index = len(iterable) - 1
+        for item in reversed(iterable):
+            if not item:
+                iterable.pop(index)
+            index -= 1
+    else:
+        raise TypeError(f"The argument type should be \"dict\" or \"list\" not {type(iterable)}")
+
 def extract_zip(file: typing.Union[str, typing.IO[bytes]], path = None, extract = True, recursively = True):
     """
     `file`: a path to a zip file \n
-    `path`: a target root folder \n
+    `path`: a target root folder, if `None` the zip's folder is used \n
     `extract`: if `False` the function only returns the list of files without an extraction \n
     `recursively`: extract zips recursively
     """
