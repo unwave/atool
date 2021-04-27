@@ -14,6 +14,7 @@ from datetime import datetime
 from timeit import default_timer as timer
 
 import bpy
+import bpy.utils.previews
 from PIL import Image as pillow_image
 
 try: 

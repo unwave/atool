@@ -804,6 +804,15 @@ class ATOOL_OT_save_material_settings(bpy.types.Operator, Shader_Editor_Poll):
 
         try:
             connection = sqlite3.connect(MATERIAL_SETTINGS_PATH)
+            cursor = connection.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    id TEXT PRIMARY KEY,
+                    hash_name TEXT,
+                    last_path TEXT,
+                    data TEXT
+                    )
+            """)
         except sqlite3.Error as e:
             self.report({'ERROR'}, "Cannot connect to a material settings database.")
             self.report({'ERROR'}, e)
@@ -835,15 +844,6 @@ class ATOOL_OT_save_material_settings(bpy.types.Operator, Shader_Editor_Poll):
             image_hashes = [hashfile(image_path, hexdigest=True) for image_path in image_paths]
             image_path_by_id = dict(zip(image_hashes, image_paths))
         
-            cursor = connection.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS settings (
-                    id TEXT PRIMARY KEY,
-                    hash_name TEXT,
-                    last_path TEXT,
-                    data TEXT
-                    )
-            """)
 
             updated_setting_ids = []
             cursor.execute(f"SELECT * FROM settings WHERE id in ({', '.join(['?']*len(image_hashes))})", image_hashes)
@@ -884,13 +884,17 @@ def load_material_settings(operator, context, node_groups = None, node_trees = N
     if node_groups is None: node_groups = []
     if node_trees is None: node_trees = []
 
-    if not os.path.exists(MATERIAL_SETTINGS_PATH):
-        operator.report({'INFO'}, f"No settings have been saved yet.")
-        return {'CANCELLED'}
-
     try:
         connection = sqlite3.connect(MATERIAL_SETTINGS_PATH)
         cursor = connection.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                id TEXT PRIMARY KEY,
+                hash_name TEXT,
+                last_path TEXT,
+                data TEXT
+                )
+        """)
     except sqlite3.Error as e:
         operator.report({'ERROR'}, "Cannot connect to a material settings database.")
         operator.report({'ERROR'}, e)

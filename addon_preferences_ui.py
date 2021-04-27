@@ -33,20 +33,20 @@ class ATOOL_PT_addon_preferences(bpy.types.AddonPreferences):
         min=0,
         max=31
         )
-    # updater_intrval_hours: bpy.props.IntProperty(
-    #     name='Hours',
-    #     description="Number of hours between checking for updates",
-    #     default=0,
-    #     min=0,
-    #     max=23
-    #     )
-    # updater_intrval_minutes: bpy.props.IntProperty(
-    #     name='Minutes',
-    #     description="Number of minutes between checking for updates",
-    #     default=0,
-    #     min=0,
-    #     max=59
-    #     )
+    updater_intrval_hours: bpy.props.IntProperty(
+        name='Hours',
+        description="Number of hours between checking for updates",
+        default=0,
+        min=0,
+        max=23
+        )
+    updater_intrval_minutes: bpy.props.IntProperty(
+        name='Minutes',
+        description="Number of minutes between checking for updates",
+        default=0,
+        min=0,
+        max=59
+        )
 
     def draw(self, context):
         layout = self.layout
