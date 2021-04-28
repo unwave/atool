@@ -475,20 +475,16 @@ class Node_Tree_Wrapper:
 
         self.output: Node_Wrapper
         self.output = None
+
+        for node in self.node_tree.nodes:
+            self.nodes[node.name] = Node_Wrapper(node)
         
         for link in self.links:
             if link.is_hidden or not link.is_valid:
                 continue
             
-            to_node = self.nodes.get(link.to_node.name)
-            if not to_node:
-                to_node = Node_Wrapper(link.to_node)
-                self.nodes[to_node.name] = to_node
-            
-            from_node = self.nodes.get(link.from_node.name)
-            if not from_node:
-                from_node = Node_Wrapper(link.from_node)
-                self.nodes[from_node.name] = from_node
+            to_node = self.nodes[link.to_node.name]
+            from_node = self.nodes[link.from_node.name]
 
             to_socket = link.to_socket
             from_socket = link.from_socket

@@ -282,14 +282,22 @@ class Blend_Import:
             else:
                 objects.append(object)
 
+        imported = {}
+
         def add_object(object, collection):
             object["atool_id"] = self.atool_id
 
             if self.link:
+                imported_object = imported.get((object.name, object.library))
+                if imported_object:
+                    return imported_object
+
                 object_overried = object.override_create(remap_local_usages=False)
                 object_overried["atool_id"] = self.atool_id
                 collection.objects.link(object_overried)
                 object_overried.select_set(True)
+
+                imported[(object.name, object.library)] = object_overried
                 return object_overried
             else:
                 collection.objects.link(object)
