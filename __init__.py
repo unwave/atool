@@ -136,6 +136,9 @@ def register():
 
 
 def unregister():
+
+    addon_updater_ops.unregister(bl_info)
+
     for c in classes:
         bpy.utils.unregister_class(c)
 
