@@ -1109,6 +1109,9 @@ def set_uv_scale_multiplier(operator, context, objects = [], node_trees = {}, tr
 
         for group in groups:
             group = node_tree[group.name]
+
+            if not "Global Scale" in group.inputs.keys():
+                continue
             
             has_uv_multiplier = False
 
