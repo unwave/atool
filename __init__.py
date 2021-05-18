@@ -80,8 +80,9 @@ from . view_3d_ui import *
 from . shader_editor_operator import *
 from . shader_editor_ui import *
 from . data import *
+from . import utils
 
-config = read_local_file("config.json")
+config = utils.read_local_file("config.json") # type: dict
 if config and config.get("dev_mode"):
     from . dev_tools import *
 
@@ -108,11 +109,17 @@ def register():
         ':more_tags - less than 4 tags\n'\
         ':no_url - with no url\n'\
         ':i - intersection mode, default - subset\n'\
+        '-<tag> to exclude the tag\n'\
         'id:<asset id> - find by id'
-        ,update=update_search)
+        ,update=update_search, default='')
     wm.at_current_page = bpy.props.IntProperty(name="Page", description="Page", update=update_page, min=1, default=1)
     wm.at_assets_per_page = bpy.props.IntProperty(name="Assets Per Page", update=update_assets_per_page, min=1, default=24, soft_max=104)
 
+    bpy.types.Object.at_uv_multiplier = bpy.props.FloatProperty(default = 1)
+
+    wm = bpy.context.window_manager
+    wm["at_asset_previews"] = 0
+    wm["at_current_page"] = 1
 
     importing = threading.Thread(target=wm.at_asset_data.update)
     importing.start()
@@ -150,6 +157,8 @@ def unregister():
     del wm.at_search
     del wm.at_current_page
     del wm.at_assets_per_page
+
+    del bpy.types.Object.at_uv_multiplier
 
 init_time = timer() - start
 log.info("__init__ time:\t" + str(init_time))

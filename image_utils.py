@@ -4,13 +4,13 @@ import json
 import logging
 import os
 import sqlite3
-from typing import Dict, List, Tuple, Type
+import typing
 
 import cv2 as cv
 import numpy as np
 from cached_property import cached_property
 from PIL import Image as pillow_image
-# import imagesize
+from PIL import ImageGrab
 
 log = logging.getLogger("atool")
 
@@ -64,8 +64,8 @@ class Image:
         self.extension = self.extension.lower()
 
         self.data_block: object # bpy.types.Image
-        self.type: List[str] # what if type definer retruns all possible types in order of more probable?
-        self.min_max: Dict[str, Tuple[float, float]]
+        self.type: typing.List[str] # what if type definer retruns all possible types in order of more probable?
+        self.min_max: typing.Dict[str, typing.Tuple[float, float]]
         self.min_max = {}
         self.dominant_color = {}
         self.image: np.ndarray
@@ -88,6 +88,7 @@ class Image:
             else:
                 type = ['None']
         image.type = type
+        block["at_type"] = type
 
         return image
         
@@ -376,3 +377,26 @@ class Image:
         if not os.path.exists(new_image_path):
             image = self.to_uint8()
             cv.imwrite(new_image_path, image)
+
+
+
+def save_as_icon(image: pillow_image.Image, path):
+    x, y = image.size
+    if x > y:
+        box = ((x-y)/2, 0, (x+y)/2, y)
+    elif x < y:
+        box = (0, (y-x)/2, x, (y+x)/2)
+    else:
+        box = None
+    image = image.resize((128, 128), resample = pillow_image.LANCZOS, box = box)
+    icon_path = os.path.join(path, "__icon__.png")
+    image.save(icon_path , "PNG", optimize=True)
+    return icon_path
+
+def save_as_icon_from_clipboard(path):
+    grab = ImageGrab.grabclipboard()
+    if not grab:
+        print("No image in the clipboard.")
+        return None
+    return save_as_icon(grab, path)
+        

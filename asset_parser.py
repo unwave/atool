@@ -3,16 +3,17 @@ import os
 import json
 import subprocess
 import tempfile
+import operator
 from collections import Counter
 
 import logging
 log = logging.getLogger("atool")
 
 try:
-    from . utils import locate_item, deduplicate, remove_empty, extract_zip
+    from . import utils
     from . type_definer import get_type
 except:
-    from utils import locate_item, deduplicate, remove_empty, extract_zip # for external testing
+    import utils
     from type_definer import get_type
 
 try:
@@ -86,11 +87,15 @@ def get_web_cc0textures_info(url, content_folder):
         return False, response.text
         
     json = response.json()
-    if response.status_code != 200:
-        return False, json
 
     asset = json["foundAssets"][0]
 
+    dimensions = {}
+    for letter, name in zip('xyz', ("dimensionX", "dimensionY" "dimensionZ")):
+        dimension = asset.get(name)
+        if dimension:
+            dimensions[letter] = dimension
+            
     info = {
     "id": id,
     "name": asset["displayName"],
@@ -101,32 +106,17 @@ def get_web_cc0textures_info(url, content_folder):
     "licence_url": "https://docs.cc0textures.com/licensing.html",
     "tags": asset["tags"],
     "preview_url": asset["previewImage"]["1024-PNG"],
+    "description": asset.get("description"),
+    "dimensions": dimensions
     }
 
-    dimensionX = asset.get("dimensionX")
-    if not dimensionX:
-        dimensionX = 1
-    dimensionY = asset.get("dimensionY")
-    if not dimensionY:
-        dimensionY = 1
-    dimensionZ = asset.get("dimensionZ")
-    if not dimensionZ:
-        dimensionZ = 0.1
-
-    info["dimension"] = [dimensionX, dimensionY, dimensionZ]
-
-    
-    description = asset.get("description")
-    if description:
-        info["dimensions"] = description
-
-
     if content_folder:
-        download = locate_item(asset["downloadFolders"], ("attribute", "4K-JPG"), return_as = "parent")[0]
+        download = utils.locate_item(asset["downloadFolders"], ("attribute", "4K-JPG"), return_as = "parent")[0]
         url = download["downloadLink"] # "https://cc0textures.com/get?file=Plaster003_4K-PNG.zip"
         info["downloadLink"] = url
         info["fileName"] = download["fileName"] # "Plaster003_4K-PNG.zip"
 
+    utils.remove_empty(info)
     return True, info
 
 def get_web_cc0textures_asset(url, content_folder):
@@ -144,7 +134,7 @@ def get_web_cc0textures_asset(url, content_folder):
 
     is_ok, result = get_web_file(url, content_path = content_path, headers=headers)
     if is_ok:
-        extract_zip(result, path = content_folder)
+        utils.extract_zip(result, path = content_folder)
         os.remove(result)
     else:
         print(f"Cannot download asset {url}", result)
@@ -273,30 +263,33 @@ def get_web_texturehaven_info(url, content_folder):
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(response.text, 'html.parser')
 
-    dimensions = []
+    dimensions = {}
     tags = []
 
     for item in soup.find(name="div", id = "item-info").findAll("li"):
         title = item.get("title")
+
         if not title:
             b = item.find('b')
             if b:
                 title = b.string
+
         if title:
+            
             if title.startswith("Author"):
                 author = title.split(":")[1].strip()
                 author_url = f"https://texturehaven.com/textures/?a={author}"
+
             elif title.startswith("Real-world"):
                 dimensions = title.split(":")[1].strip()
                 number_pattern = re.compile("\d+\.?\d*")
-                dimensions = [float(number) for number in number_pattern.findall(dimensions)]
+                for letter, number in zip('xyz', number_pattern.findall(dimensions)):
+                    dimensions[letter] = float(number)
+
             elif title.startswith(("Categories", "Tags")):
                 tags.extend([a.string.lower().strip() for a in item.findAll("a")])
 
     preview_url = "https://texturehaven.com" + soup.find(name = "div", id = "item-preview").find("img")["src"]
-
-    if len(dimensions) == 2:
-        dimensions.append(0.1)
 
     info = {
         "id": id,
@@ -311,6 +304,9 @@ def get_web_texturehaven_info(url, content_folder):
         # "description": "",
         "dimensions": dimensions,
     }
+
+    utils.remove_empty(info)
+
 
     if content_folder:
         downloads = []
@@ -342,7 +338,7 @@ def get_web_texturehaven_info(url, content_folder):
                     if "gl_normal" in _download.lower():
                         downloads.remove(download)
 
-        downloads = deduplicate(downloads)
+        downloads = utils.deduplicate(downloads)
         info["downloads"] = downloads
 
     return True, info
@@ -374,14 +370,15 @@ def get_web_texturehaven_asset(url, content_folder):
 
 def get_info_from_substance_json(data):
 
-    preview_url = locate_item(data, ("label", "main"), return_as = "parent")[0]["url"]
+    preview_url = utils.locate_item(data, ("label", "main"), return_as = "parent")[0]["url"]
 
     extra_data = {dict["key"]: dict["value"] for dict in data["extraData"]}
 
-    dimensions = []
+    dimensions = {}
     physicalSize = extra_data.get("physicalSize")
     if physicalSize:
-        dimensions = [float(dimension)/100.0 for dimension in physicalSize.split("/")]
+        for letter, dimension in zip('xyz' , physicalSize.split("/")):
+            dimensions[letter] = float(dimension)/100.0
 
     tags = data["tags"]
     tags.append(extra_data["type"])
@@ -402,7 +399,7 @@ def get_info_from_substance_json(data):
 
     # info["preview_path"] = ""
 
-    remove_empty(info)
+    utils.remove_empty(info)
     return info
 
 def get_info_from_sbsar_xml(xml_file):
@@ -410,7 +407,7 @@ def get_info_from_sbsar_xml(xml_file):
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(xml_text.read(), "html.parser")
         graph = soup.find("graph")
-        attrs = graph.attrs
+        attrs = graph.attrs # type: dict
 
         tags = []
         keywords = attrs.get("keywords")
@@ -421,7 +418,7 @@ def get_info_from_sbsar_xml(xml_file):
         if category:
             tags.extend(re.split(r" |/|,", category.lower()))
         
-        tags = deduplicate(tags)
+        tags = utils.deduplicate(tags)
         tags = list(filter(None, tags))
 
         id = None
@@ -439,12 +436,13 @@ def get_info_from_sbsar_xml(xml_file):
         if label:
             name = label.strip(" ")
 
-        dimensions = []
+        dimensions = {}
         physicalsize = attrs.get("physicalsize")
         if physicalsize:
-            dimensions = [float(dimension)/100.0 for dimension in physicalsize.split(",")]
+            for letter, dimension in zip('xyz' , physicalsize.split(",")):
+                dimensions[letter] = float(dimension)/100.0
 
-        sbsar_info = {
+        info = {
             "id": id,
             "name": name,
             # "url": "",
@@ -459,8 +457,9 @@ def get_info_from_sbsar_xml(xml_file):
             "xml_attrs": attrs
         }
 
-        remove_empty(sbsar_info)
-        return sbsar_info
+
+        utils.remove_empty(info)
+        return info
 
 def get_info_from_sbsar(sbsar):
 
@@ -718,9 +717,12 @@ def get_web_sketchfab_info(url, content_folder):
 
     import requests
     response = requests.get("https://sketchfab.com/i/models/"+ id)
-    json = response.json()
     if response.status_code != 200:
-        return False, json
+        return False, response.text
+
+    json = response.json()
+
+    preview_url = max(json["thumbnails"]["images"], key=operator.itemgetter("size"))["url"]
 
     info = {
         "id": json["slug"],
@@ -731,11 +733,18 @@ def get_web_sketchfab_info(url, content_folder):
         "licence": json["license"]["label"],
         "licence_url": json["license"]["url"],
         "tags": json["tags"],
-        "preview_url": "",
-        "preview_path": "",
+        "preview_url": preview_url,
         "description": json["description"],
         # "dimensions": []
     }
+
+    if content_folder:
+        is_ok, result = get_web_file(preview_url, content_folder)
+        if is_ok:
+            info["preview_path"] = result
+        else:
+            print("Cannot get preview from:", preview_url)
+            print(result)
 
     return True, info
 
@@ -767,6 +776,8 @@ def get_megascan_info_from_json(mega_info):
 
     number_pattern = re.compile("\d+(?:\.\d+)?")
 
+    dimensions = {}
+
     x = meta.get("length")
     if x:
         x = float(number_pattern.search(x).group(0))
@@ -777,7 +788,7 @@ def get_megascan_info_from_json(mega_info):
     if not x and not y:
         scan_area = meta.get("scanArea")
         if not scan_area:
-            sizes = locate_item(mega_info, "physicalSize", True, True)
+            sizes = utils.locate_item(mega_info, "physicalSize", True, True)
             scan_area = Counter(sizes).most_common(1)[0][0]
         if scan_area:
             sizes = number_pattern.findall(scan_area)
@@ -787,33 +798,14 @@ def get_megascan_info_from_json(mega_info):
             elif len(sizes) == 1:
                 x = y = float(sizes[0])
                 
-    if not x: x = 1
-    if not y: y = 1
+    if x:
+        dimensions['x'] = x
+    if y:
+        dimensions['y'] = y
             
     z = meta.get("height")
     if z:
-        z = float(number_pattern.search(z).group(0))
-    else:
-        z = 1
-
-    dimensions = [x, y, z]
-
-    # get original id slug
-    # lb_id = re.search(fr".+_{megascan_id}", file.name)
-    # if lb_id:
-    #     lb_id = lb_id[0]
-    # else:
-    #     name = [file.name for file in files.get_files() if file.name.lower().endswith("_preview.png")]
-    #     if name:
-    #         match = re.search(fr".+(?=_{megascan_id})", name[0])
-    #         if not match:
-    #             match = re.search(fr".+(?=_{megascan_id})", file.name)
-                
-    #         if match:
-    #             name = match[0].replace("_", " ")
-    #         else:
-    #             name = ""
-
+        dimensions['z'] = float(number_pattern.search(z).group(0))
 
     info = {
         # "id": "", # can get a slug from the json listing files
@@ -829,6 +821,7 @@ def get_megascan_info_from_json(mega_info):
         "dimensions": dimensions,
     }
 
+    utils.remove_empty(info)
     return info
 
 def get_web_megascan_info(url, content_folder):
@@ -866,7 +859,7 @@ info = {
     "tags": [],
     "preview_url": "",
     "description": "",
-    "dimensions": [],
+    "dimensions": {},
 }
 info["preview_path"] = ""
 '''

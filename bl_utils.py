@@ -1,6 +1,7 @@
 from __future__ import annotations
 import operator
 import typing
+import os
 
 import bpy
 
@@ -176,6 +177,9 @@ class Sockets_Wrapper(typing.Dict[typing.Union[str, int], Socket_Wrapper], dict)
             return dict.__getitem__(self, self.identifiers[key])
         else:
             return dict.__getitem__(self, key)
+
+    def __iter__(self):
+        return iter(self.values())
 
     def get(self, key) -> Socket_Wrapper:
         if isinstance(key, int):
@@ -523,7 +527,7 @@ class Reference:
 
         id_type = id_data.__class__.__name__
 
-        if id_type not in ("Object", "Material", "ShaderNodeTree"):
+        if id_type not in ("Object", "Material", "ShaderNodeTree", "Image", "Library"):
             raise NotImplementedError("Reference for the type '{id_type}' is not yet implemented.")
 
         if id_type == 'ShaderNodeTree' and is_embedded_data: # if is material
@@ -557,6 +561,10 @@ class Reference:
                 id_data = self.origin.get().node_tree
             else:
                 id_data = bpy.data.node_groups.get(self.id_name, self.id_library)
+        elif id_type == "Image":
+            id_data = bpy.data.images.get(self.id_name, self.id_library)
+        elif id_type == "Library":
+            id_data = bpy.data.libraries.get(self.id_name, self.id_library)
         
         if not id_data:
             return None
@@ -567,3 +575,26 @@ class Reference:
             object = id_data
 
         return object
+
+class Missing_File:
+    # SUPPORTED_TYPES = ('Image', 'Library')
+
+    def __init__(self, path, block):
+
+        self.block = Reference(block)
+        self.type: str
+        self.type = block.__class__.__name__
+
+        # if self.type not in self.SUPPORTED_TYPES:
+        #     raise TypeError(f"The block '{block.name}' with type '{self.type}' is not supported.")
+
+        self.path = path.lower()
+        self.name = os.path.basename(self.path)
+
+        self.found_paths = []
+        self.closest_path: str = None
+
+    def reload(self):
+        block = self.block.get()
+        block.filepath = self.closest_path
+        block.reload()

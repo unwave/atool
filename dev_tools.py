@@ -6,9 +6,9 @@ class Shader_Editor_Poll():
     def poll(cls, context):
         return context.space_data.type == 'NODE_EDITOR' and context.space_data.tree_type == 'ShaderNodeTree'
 
-class ATOOL_OT_copy_to_clipbord(bpy.types.Operator, Shader_Editor_Poll):
-    bl_idname = "nodeinsp.copy_to_clipbord"
-    bl_label = "Copy To Clipbord"
+class ATOOL_OT_copy_to_clipboard(bpy.types.Operator, Shader_Editor_Poll):
+    bl_idname = "nodeinsp.copy_to_clipboard"
+    bl_label = "Copy To clipboard"
     bl_description = "Click to copy the content"
     bl_options = {'REGISTER'}
     
@@ -20,8 +20,8 @@ class ATOOL_OT_copy_to_clipbord(bpy.types.Operator, Shader_Editor_Poll):
         
         return {'FINISHED'}
     
-class ATOOL_OT_copy_all_to_clipbord(bpy.types.Operator, Shader_Editor_Poll):
-    bl_idname = "nodeinsp.copy_all_to_clipbord"
+class ATOOL_OT_copy_all_to_clipboard(bpy.types.Operator, Shader_Editor_Poll):
+    bl_idname = "nodeinsp.copy_all_to_clipboard"
     bl_label = ""
     bl_description = "Click to copy the content for all the selected nodes"
     bl_options = {'REGISTER'}
@@ -70,9 +70,9 @@ class ATOOL_PT_node_inspector(bpy.types.Panel):
             value = str(value)
             
             row = column.row(align=True)
-            row.operator("nodeinsp.copy_to_clipbord", text=name, emboss=False).string = name
-            row.operator("nodeinsp.copy_to_clipbord", text=value).string = value
-            row.operator("nodeinsp.copy_all_to_clipbord", text='', icon='COPYDOWN').attribute = attribute
+            row.operator("nodeinsp.copy_to_clipboard", text=name, emboss=False).string = name
+            row.operator("nodeinsp.copy_to_clipboard", text=value).string = value
+            row.operator("nodeinsp.copy_all_to_clipboard", text='', icon='COPYDOWN').attribute = attribute
         
         selected_nodes = context.selected_nodes
         if selected_nodes:

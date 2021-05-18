@@ -1,4 +1,5 @@
 import bpy
+import threading
 from . import addon_updater_ops
 
 class ATOOL_PT_addon_preferences(bpy.types.AddonPreferences):
@@ -70,6 +71,6 @@ class ATOOL_OT_update_data_paths(bpy.types.Operator):
         asset_data.library = addon_preferences.library_path
         asset_data.auto = addon_preferences.auto_path
 
-        asset_data.update()
+        threading.Thread(target=asset_data.update).start()
 
         return {"FINISHED"}

@@ -5,7 +5,7 @@ import logging
 import os
 import re
 from difflib import SequenceMatcher
-from typing import Dict, List, Tuple, Type
+import typing
 
 log = logging.getLogger("atool")
 
@@ -248,7 +248,7 @@ def define(paths, config: dict):
         result["ok"] = False
         result["report"] = report = []
         queue = config.get("queue")
-        images: List[image_utils.Image]
+        images: typing.List[image_utils.Image]
         images = [image_utils.Image(path.lower()) for path in paths]
 
 

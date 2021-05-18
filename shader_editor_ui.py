@@ -31,7 +31,7 @@ class ATOOL_PT_tools(bpy.types.Panel):
         subcolumn.operator("atool.add_detail_blend", text = "Detail Blend", icon='MOD_UVPROJECT')
         column.separator()
 
-        column.operator("atool.normalize_height_range", text = "Normalize Image", icon='SEQ_HISTOGRAM')
+        column.operator("atool.normalize_range", text = "Normalize Image", icon='SEQ_HISTOGRAM')
         column.operator("atool.ensure_adaptive_subdivision", text = "Ensure Adaptive Subdivision", icon='MOD_NOISE')
         column.operator("atool.set_uv_scale_multiplier", icon='UV_DATA')
         column.operator("atool.to_pbr", icon='MATERIAL_DATA')

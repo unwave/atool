@@ -9,13 +9,16 @@ import typing
 from datetime import datetime
 
 import bpy
+import bmesh
 import mathutils
 
 from . import image_utils
 from . import type_definer
-from . data import get_browser_items
+from . data import AssetData, get_browser_items
 from . shader_editor_operator import Material_Import_Properties, apply_material, get_definer_config
 from . bl_utils import Reference
+from . import utils
+from . import bl_utils
 
 # import webbrowser
 # import numpy
@@ -56,41 +59,11 @@ def get_unique_libraries_from_selected_objects(operator, context):
     linked_objects = get_linked_objects_from_selected(operator, context)
     return list({object.data.library for object in linked_objects})
     
-def os_open(operator, path):
-    platform = sys.platform
-    if platform=='win32':
-        os.startfile(path)
-    elif platform=='darwin':
-        subprocess.Popen(['open', path])
-    else:
-        try:
-            subprocess.Popen(['xdg-open', path])
-        except OSError:
-            operator.report({'INFO'}, "Current OS is not supported.")
-            import traceback
-            traceback.print_exc()
-
-def web_open(string , is_url = False):
-
-    starts_with_http = string.startswith("https://") or string.startswith("http://")
-
-    if is_url:
-        if not starts_with_http:
-            url = "https://" + string
-        else:
-            url = string
-    else:
-        if starts_with_http:
-            url = string
-        else:
-            url = fr"https://www.google.com/search?q={string}"
     
-    import webbrowser
-    webbrowser.open(url, new=2, autoraise=True)
-
 def get_current_browser_asset(operator, context):
-    library = context.window_manager.at_asset_data.data
-    if not library:
+    
+    asset_data = context.window_manager.at_asset_data # type: AssetData
+    if not asset_data:
         operator.report({'INFO'}, "The library is empty.")
         return
 
@@ -99,7 +72,12 @@ def get_current_browser_asset(operator, context):
         operator.report({'INFO'}, "Select an asset.")
         return
 
-    return library[asset_id]
+    asset = asset_data.get(asset_id)
+    if not asset:
+        operator.report({'INFO'}, "Select an asset. Current is not available.")
+        return
+
+    return asset
 
 class ATOOL_OT_open_library_in_file_browser(bpy.types.Operator, Object_Mode_Poll):
     bl_idname = "atool.os_open"
@@ -108,9 +86,14 @@ class ATOOL_OT_open_library_in_file_browser(bpy.types.Operator, Object_Mode_Poll
 
     def execute(self, context):
 
+        files = []
+
         for library in get_unique_libraries_from_selected_objects(self, context):
-            file_dir = os.path.dirname(os.path.realpath(bpy.path.abspath(library.filepath)))
-            os_open(self, file_dir)
+            file_dir = os.path.realpath(bpy.path.abspath(library.filepath))
+            files.append(file_dir)
+        
+        if files:
+            threading.Thread(target=utils.os_show, args=(self, files,)).start()
         
         return {'FINISHED'}
 
@@ -200,7 +183,7 @@ class ATOOL_OT_move_to_library(bpy.types.Operator, Object_Mode_Poll):
             self.report({'INFO'}, "No valid objects.")
             return {'CANCELLED'}
 
-        asset_data = context.window_manager.at_asset_data
+        asset_data = context.window_manager.at_asset_data # type: AssetData
 
         if not asset_data.library:
             self.report({'INFO'}, "No library folder specified.")
@@ -283,6 +266,7 @@ class Blend_Import:
                 objects.append(object)
 
         imported = {}
+        final_objects = []
 
         def add_object(object, collection):
             object["atool_id"] = self.atool_id
@@ -319,17 +303,17 @@ class Blend_Import:
 
             for object in collection.all_objects:
                 collection_objects.append(object)
-                add_object(object, new_collection)
-        
+                final_objects.append(add_object(object, new_collection))
+    
         for object in objects:
             if object in collection_objects:
                 continue
-            add_object(object, context.collection)
+            final_objects.append(add_object(object, context.collection))
 
         if not self.link:
             return {'FINISHED'}
 
-        imported_objects = {object.name: object for object in objects}
+        imported_objects = {object.name: object for object in final_objects}
 
         for object in imported_objects.values():
             object.use_fake_user = False
@@ -391,11 +375,8 @@ class ATOOL_OT_import_asset(bpy.types.Operator, Object_Mode_Poll, Material_Impor
 
             info = self.asset.info
 
-            self.height_scale = None
-            dimensions = info.get("dimensions")
-            if dimensions:
-                x, y, z = dimensions
-                self.height_scale = z * min(x, y)
+            self.dimensions = {'x': 1, 'y': 1, 'z': 0.1}
+            self.dimensions.update(info["dimensions"])
 
             self.asset_name = info.get("name")
 
@@ -499,7 +480,7 @@ class ATOOL_OT_open_gallery(bpy.types.Operator, Object_Mode_Poll):
             self.report({'INFO'}, "No gallery.")
             return {'CANCELLED'}
         latest_image = max(images, key=os.path.getmtime)
-        os_open(self, latest_image)
+        utils.os_open(self, latest_image)
             
         return {'FINISHED'}
 
@@ -525,6 +506,7 @@ class ATOOL_OT_pin_active_asset(bpy.types.Operator, Object_Mode_Poll):
 
         return {'FINISHED'}
 
+
 class ATOOL_OT_open_attr(bpy.types.Operator, Object_Mode_Poll):
     bl_idname = "atool.open_attr"
     bl_label = ""
@@ -545,9 +527,9 @@ class ATOOL_OT_open_attr(bpy.types.Operator, Object_Mode_Poll):
             return {'CANCELLED'}
 
         if isinstance(attr, list):
-            web_open(' '.join(attr))
-        else:
-            web_open(attr)
+            attr = ' '.join(attr)
+            
+        utils.web_open(attr)
             
         return {'FINISHED'}
 
@@ -563,7 +545,7 @@ class ATOOL_OT_open_asset_folder(bpy.types.Operator, Object_Mode_Poll):
         if not asset:
             return {'CANCELLED'}
 
-        os_open(self, asset.path)
+        utils.os_open(self, asset.path)
         
         return {'FINISHED'}
 
@@ -593,7 +575,7 @@ class ATOOL_OT_navigate(bpy.types.Operator, Object_Mode_Poll):
 
     def execute(self, context):
         wm = context.window_manager
-        asset_data = wm.at_asset_data
+        asset_data = wm.at_asset_data # type: AssetData
         
         last_index = len(get_browser_items(None, None)) - 1
         current_index = wm.get("at_asset_previews", 0)
@@ -630,10 +612,9 @@ class ATOOL_OT_reload_asset(bpy.types.Operator, Object_Mode_Poll):
     do_reimport: bpy.props.BoolProperty(default=False)
 
     def execute(self, context):
-        asset_data = context.window_manager.at_asset_data
+        asset_data = context.window_manager.at_asset_data # type: AssetData
 
-        library = asset_data.data
-        if not library:
+        if not asset_data:
             self.report({'INFO'}, "The library is empty.")
             return {'CANCELLED'}
 
@@ -733,7 +714,6 @@ class baking_image_node:
         self.nodes.remove(self.image_node)
         self.nodes.active = self.initial_active_node
 
-
 class output_override:
     def __init__(self, material, material_output, traget_socket_output):
         self.nodes = material.node_tree.nodes
@@ -757,11 +737,10 @@ class output_override:
         if self.material_output_initial_socket_input:
             self.links.new(self.material_output_initial_socket_input, self.material_output.inputs[0])
 
-
 class ATOOL_OT_match_displacement(bpy.types.Operator, Object_Mode_Poll):
     bl_idname = "atool.match_displacement"
     bl_label = "Match Displacement"
-    bl_description = "Make the particles match the shader displacement of the object"
+    bl_description = "Make the particles match the shader displacement of the object. Works only for UV based materials"
     bl_options = {'REGISTER', 'UNDO'}
 
     random_rotation: bpy.props.BoolProperty(name = "Random Rotation", default = True)
@@ -783,6 +762,10 @@ class ATOOL_OT_match_displacement(bpy.types.Operator, Object_Mode_Poll):
         bake_plane.name = "__bake_plane__"
 
         for object in selected_objects:
+
+            if object.type != 'MESH':
+                self.report({'INFO'}, f"\"{object.name}\" is not a mesh. Skipped.")
+                continue
 
             object_materials = object.data.materials
 
@@ -833,6 +816,8 @@ class ATOOL_OT_match_displacement(bpy.types.Operator, Object_Mode_Poll):
             if not particle_systems_modifiers:
                 self.report({'INFO'}, f"\"{object.name}\" has no particle systems. Skipped.")
                 continue
+
+            bake_plane.at_uv_multiplier = object.at_uv_multiplier
 
             for modifier in particle_systems_modifiers:
                 particle_system = modifier.particle_system
@@ -942,6 +927,7 @@ class ATOOL_OT_match_displacement(bpy.types.Operator, Object_Mode_Poll):
 
         return {'FINISHED'}
 
+
 class ATOOL_OT_get_web_info(bpy.types.Operator, Object_Mode_Poll):
     bl_idname = "atool.get_web_info"
     bl_label = "Get Info From Url"
@@ -960,6 +946,7 @@ class ATOOL_OT_get_web_info(bpy.types.Operator, Object_Mode_Poll):
 
         return {'FINISHED'}
 
+
 class ATOOL_OT_open_info(bpy.types.Operator, Object_Mode_Poll):
     bl_idname = "atool.open_info"
     bl_label = "Open Info"
@@ -970,7 +957,7 @@ class ATOOL_OT_open_info(bpy.types.Operator, Object_Mode_Poll):
         if not asset:
             return {'CANCELLED'}
 
-        os_open(self, asset.json_path)
+        utils.os_open(self, asset.json_path)
         return {'FINISHED'}
 
 
@@ -996,7 +983,7 @@ class ATOOL_OT_get_web_asset(bpy.types.Operator, Object_Mode_Poll):
 
     def execute(self, context):
 
-        asset_data = context.window_manager.at_asset_data
+        asset_data = context.window_manager.at_asset_data # type: AssetData
         if not asset_data.library:
             self.report({'INFO'}, "No library folder specified.")
             return {'CANCELLED'}
@@ -1029,19 +1016,20 @@ class ATOOL_OT_distibute(bpy.types.Operator, Object_Mode_Poll):
             return {'CANCELLED'}
 
         target = context.object
+
+        if not hasattr(target, 'modifiers'):
+            self.report({'INFO'}, f"{target.name} cannot have particles.")
+            return {'CANCELLED'}
+        
         particles_objects = context.selected_objects.copy()
         particles_objects.remove(target)
-
-        collection = bpy.data.collections.new("__atool_particle_collection__")
-        # context.scene.collection.children.link(collection)
-        for object in particles_objects:
-            collection.objects.link(object)
-            object.rotation_euler[0] = 0
-            object.rotation_euler[1] = math.radians(90)
-            object.rotation_euler[2] = 0
-
     
         particle_system_modifier = target.modifiers.new(name = "__atool__", type='PARTICLE_SYSTEM')
+
+        if not particle_system_modifier:
+            self.report({'INFO'}, f"{target.name} cannot have particles.")
+            return {'CANCELLED'}
+
         particle_system = particle_system_modifier.particle_system
         
         particle_system.seed = int(mathutils.noise.random() * 9999)
@@ -1057,6 +1045,16 @@ class ATOOL_OT_distibute(bpy.types.Operator, Object_Mode_Poll):
         settings.hair_length = 1
         settings.particle_size = 1
 
+        collection = bpy.data.collections.new("__atool_particle_collection__")
+        # context.scene.collection.children.link(collection)
+        for object in particles_objects:
+            collection.objects.link(object)
+
+            initial_rotation_mode = object.rotation_mode
+            object.rotation_mode = 'XYZ'
+            object.rotation_euler = (0, math.radians(90), 0)
+            object.rotation_mode = initial_rotation_mode
+
         settings.render_type = 'COLLECTION'
         settings.instance_collection = collection
 
@@ -1064,7 +1062,10 @@ class ATOOL_OT_distibute(bpy.types.Operator, Object_Mode_Poll):
         settings.rotation_factor_random = 0.05
         settings.phase_factor_random = 2
 
+        
+
         return {'FINISHED'}
+
 
 class ATOOL_OT_process_auto(bpy.types.Operator, Object_Mode_Poll):
     bl_idname = "atool.process_auto"
@@ -1074,16 +1075,15 @@ class ATOOL_OT_process_auto(bpy.types.Operator, Object_Mode_Poll):
 
     def execute(self, context):
 
-        asset_data = context.window_manager.at_asset_data
+        asset_data = context.window_manager.at_asset_data # type: AssetData
         if not asset_data.auto:
             self.report({'INFO'}, f"The auto import folder is not specified.")
             return {'CANCELLED'}
 
-        asset_data.update_auto()
-        self.report({'INFO'}, f"The auto import is done.")
+        threading.Thread(target=asset_data.update_auto).start()
+        self.report({'INFO'}, f"The auto import started.")
 
         return {'FINISHED'}
-
 
 
 class ATOOL_OT_dolly_zoom(bpy.types.Operator, Object_Mode_Poll):
@@ -1135,5 +1135,247 @@ class ATOOL_OT_dolly_zoom(bpy.types.Operator, Object_Mode_Poll):
 
         camera.location -= delta
         camera.data.angle = target_fov
+
+        return {'FINISHED'}
+
+
+class ATOOL_OT_find_missing(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.find_missing"
+    bl_label = "Find Missing"
+    bl_description = "Find missing files with Everyting"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    prefer_desending: bpy.props.BoolProperty(name="Prefer Desending", default = True)
+    prefer_asset_folder: bpy.props.BoolProperty(name="Prefer Asset Folder", default = True)
+    # reload: bpy.props.BoolProperty(name="Reload", default = True)
+
+    def invoke(self, context, event):
+
+        missing_files = [] # type: typing.List[bl_utils.Missing_File]
+
+        for block in bpy.data.images:
+            if block.source == 'FILE':
+                path = bpy.path.abspath(block.filepath)
+                if not os.path.exists(path):
+                    missing_files.append(bl_utils.Missing_File(path, block))
+
+        for block in bpy.data.libraries:
+            path = bpy.path.abspath(block.filepath)
+            if not os.path.exists(path):
+                missing_files.append(bl_utils.Missing_File(path, block))
+
+        if not missing_files:
+            self.report({'INFO'}, f"No missing files.")
+            return {'CANCELLED'}
+        self.missing_files = missing_files # type: typing.List[bl_utils.Missing_File]
+        self.asset_data: AssetData
+        self.asset_data = context.window_manager.at_asset_data
+
+        self.process = threading.Thread(target=self.find_files)
+        self.process.start()
+
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(0.1, window=context.window)
+        wm.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+        
+    def modal(self, context, event):
+
+        if event.type == 'TIMER':
+            if not self.process.is_alive():
+                self.process.join()
+                return self.execute(context)
+
+        return {'PASS_THROUGH'}
+
+    def find_files(self):
+
+        missing_files_by_path = {} # type: typing.Dict[str, typing.List[bl_utils.Missing_File]]
+        self.missing_files_by_path = missing_files_by_path
+        for file in self.missing_files:
+            file_path = file.path
+            path_list = missing_files_by_path.get(file_path)
+            if path_list:
+                path_list.append(file)
+            else:
+                missing_files_by_path[file_path] = [file]
+        
+        names = [os.path.basename(path) for path in missing_files_by_path.keys()]
+        found_files = utils.find(names)
+        if not found_files:
+            self.found_files_by_name = {}
+            return
+
+        found_files_by_name = {} # type: typing.Dict[str, typing.List[str]]
+        self.found_files_by_name = found_files_by_name
+        for file in found_files:
+            file = file.lower()
+            name = os.path.basename(file)
+            name_list = found_files_by_name.get(name)
+            if name_list:
+                name_list.append(file)
+            else:
+                found_files_by_name[name] = [file]
+    
+        self.asset_paths = [asset.path for asset in self.asset_data.values()]
+        
+
+    def filter_desending(self, file, found_files):
+            filtered_files = []
+            local_base = os.path.dirname(file)
+            for path in found_files:
+                try:
+                    if os.path.commonpath((local_base, path)) == local_base:
+                        filtered_files.append(path)
+                except:
+                    pass
+            return filtered_files
+
+    def filter_asset_folder(self, file, found_files):
+
+        asset_folder = None
+        for path in self.asset_paths:
+            try:
+                if os.path.commonpath((file, path)) == path:
+                    asset_folder = path
+                    break
+            except:
+                pass
+
+        if asset_folder is None:
+            return None
+
+        filtered_files = []
+        for path in found_files:
+            try:
+                if os.path.commonpath((path, asset_folder)) == asset_folder:
+                    filtered_files.append(path)
+            except:
+                pass
+        return filtered_files
+
+    def execute(self, context):
+        
+        if not self.found_files_by_name:
+            self.report({'INFO'}, f"No missing files found.")
+            return {'CANCELLED'}
+
+        for path, files in self.missing_files_by_path.items():
+            paths = self.found_files_by_name.get(os.path.basename(path))
+            if not paths:
+                self.report({'WARNING'}, f"{path} not found.")
+                continue
+
+            if self.prefer_desending:
+                filtered = self.filter_desending(path, paths)
+                if filtered:
+                    paths = filtered
+
+            if self.prefer_asset_folder:
+                filtered = self.filter_asset_folder(path, paths)
+                if filtered:
+                    paths = filtered
+            
+            closest_path = utils.get_closest_path(path, paths)
+            for file in files:
+                file.closest_path = closest_path
+
+        for file in self.missing_files:
+            if file.closest_path is not None:
+                self.report({'INFO'}, f"The {file.type.lower()} '{file.name}' has been found in {file.closest_path}.")
+                file.reload()
+
+        return {'FINISHED'}
+
+
+class ATOOL_OT_unrotate(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.unrotate"
+    bl_label = "Unrotate"
+    bl_description = "Rotate the object to align the average normal and tangent of the selected faces with the global axises"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+
+        selected_objects = context.selected_objects
+        if not selected_objects:
+            self.report({'INFO'}, f"Select an objects.")
+            return {'CANCELLED'}
+
+        for object in selected_objects:
+            if object.type != 'MESH':
+                self.report({'INFO'}, f"The object '{object.name}' is not a mesh.")
+                continue
+
+            mesh = object.data
+            if not mesh:
+                self.report({'INFO'}, f"The object '{object.name}' has no geometry data.")
+                continue
+
+            bm = bmesh.new()
+            bm.from_mesh(mesh)
+
+            # face =  bm.faces.active
+            # normal = face.normal
+            # tangent = face.calc_tangent_edge()
+
+            faces = [face for face in bm.faces if face.select]
+
+            if not faces:
+                self.report({'INFO'}, f"The object '{object.name}' has no faces selected.")
+                continue
+
+            normals = [face.normal for face in faces]
+            tangents = [face.calc_tangent_edge_pair() for face in faces]
+
+            def get_average(vectors):
+                vector = vectors[0]
+                if len(vectors) > 1:
+                    for n in vectors[1:]:
+                        vector = vector.lerp(n, 0.5)
+                return vector
+
+            normal = get_average(normals)
+            tangent = get_average(tangents)
+
+            Z = mathutils.Vector((0,0,1))
+            X = mathutils.Vector((-1,0,0))
+
+            normal_rot = normal.rotation_difference(Z)
+
+            tangent.rotate(normal_rot)
+            tangent_rot = tangent.rotation_difference(X)
+            swing, twist = tangent_rot.to_swing_twist('Z')
+            twist = mathutils.Euler(Z * twist)
+
+            normal_rot.rotate(twist)
+
+            initial_rotation_mode = object.rotation_mode
+            object.rotation_mode = 'QUATERNION'
+            object.rotation_quaternion = normal_rot
+            object.rotation_mode = initial_rotation_mode
+
+        return {'FINISHED'}
+
+
+class ATOOL_OT_icon_from_clipboard(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.icon_from_clipboard"
+    bl_label = "Icon From Clipboard"
+    bl_description = "Create asset preview from the clipboard"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+
+        asset_data = context.window_manager.at_asset_data # type: AssetData
+        if not asset_data:
+            self.report({'INFO'}, "The library is empty.")
+            return
+
+        asset_id = context.window_manager.at_asset_previews
+        if asset_id == "/":
+            self.report({'INFO'}, "Select an asset.")
+            return
+
+        threading.Thread(target=asset_data.icon_from_clipboard, args = (asset_id, context)).start()
 
         return {'FINISHED'}

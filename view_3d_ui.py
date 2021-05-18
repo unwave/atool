@@ -1,6 +1,6 @@
 import bpy
 from . shader_editor_operator import draw_import_config
-
+from . import data
 
 current_asset_id = None
 current_icon_id = None
@@ -37,11 +37,12 @@ class ATOOL_MT_actions(bpy.types.Menu):
 
     def draw(self, context):
         layout = self.layout
-        browser_asset_info = context.window_manager.at_browser_asset_info
-        layout.prop(browser_asset_info, "is_shown", text = "Show Info")
-        layout.prop(browser_asset_info, "is_id_shown", text = "Show ID Info")
+        info = context.window_manager.at_browser_asset_info
+        layout.prop(info, "is_shown", text = "Show Info")
+        layout.prop(info, "is_id_shown", text = "Show ID Info")
         layout.operator("atool.open_info", icon='FILE_TEXT')
         layout.separator()
+        layout.operator("atool.icon_from_clipboard", icon='IMAGE_DATA')
         layout.operator("atool.reload_asset", text='Reload', icon='FILE_REFRESH').do_reimport = False
         layout.operator("atool.get_web_info", icon='INFO')
         layout.operator("atool.reload_asset", text='Reimport', icon='IMPORT').do_reimport = True
@@ -50,6 +51,8 @@ class ATOOL_MT_actions(bpy.types.Menu):
         layout.operator("atool.get_web_asset", icon="URL")
         layout.separator()
         layout.popover("ATOOL_PT_import_config")
+        
+        
 
 class ATOOL_PT_panel(bpy.types.Panel):
     bl_idname = "ATOOL_PT_panel"
@@ -63,8 +66,8 @@ class ATOOL_PT_panel(bpy.types.Panel):
 
         global current_browser_asset_id
         wm = context.window_manager
-        browser_asset_info = wm.at_browser_asset_info
-        asset_data = wm.at_asset_data
+        info = wm.at_browser_asset_info
+        asset_data = wm.at_asset_data # type: data.AssetData
 
         item_and_page_info = ''.join((
             "Item: ",
@@ -105,71 +108,85 @@ class ATOOL_PT_panel(bpy.types.Panel):
         column.operator("atool.import_asset")
         column.separator()
 
-        if browser_asset_info.is_shown:
+        if info.is_shown:
             library_browser_asset_id = wm.at_asset_previews
             
             if current_browser_asset_id != library_browser_asset_id:
                 current_browser_asset_id = library_browser_asset_id
                 
                 try:
-                    library_browser_asset = asset_data.data[library_browser_asset_id]
+                    asset = asset_data[library_browser_asset_id]
 
-                    browser_asset_info["id"] = library_browser_asset.id
-                    browser_asset_info["name"] = library_browser_asset.info.get("name", "")
-                    browser_asset_info["url"] = library_browser_asset.info.get("url", "")
-                    browser_asset_info["author"] = library_browser_asset.info.get("author", "")
-                    browser_asset_info["author_url"] = library_browser_asset.info.get("author_url", "")
-                    browser_asset_info["licence"] = library_browser_asset.info.get("licence", "")
-                    browser_asset_info["licence_url"] = library_browser_asset.info.get("licence_url", "")
-                    browser_asset_info["description"] = library_browser_asset.info.get("description", "")
-                    browser_asset_info["tags"] = ' '.join(library_browser_asset.info.get("tags", []))
+                    info["id"] = asset.id
+                    info["name"] = asset.info.get("name", "")
+                    info["url"] = asset.info.get("url", "")
+                    info["author"] = asset.info.get("author", "")
+                    info["author_url"] = asset.info.get("author_url", "")
+                    info["licence"] = asset.info.get("licence", "")
+                    info["licence_url"] = asset.info.get("licence_url", "")
+                    info["description"] = asset.info.get("description", "")
+                    info["tags"] = ' '.join(asset.info.get("tags", []))
+
+                    dimensions = asset.info.get("dimensions", {})
+                    info['x'] = dimensions.get("x", 1)
+                    info['y'] = dimensions.get("y", 1)
+                    info['z'] = dimensions.get("z", 0.1)
                 except:
-                    browser_asset_info["id"] = ""
-                    browser_asset_info["name"] = ""
-                    browser_asset_info["url"] = ""
-                    browser_asset_info["author"] = ""
-                    browser_asset_info["author_url"] = ""
-                    browser_asset_info["licence"] = ""
-                    browser_asset_info["licence_url"] = ""
-                    browser_asset_info["description"] = ""
-                    browser_asset_info["tags"] = ""
+                    info["id"] = ""
+                    info["name"] = ""
+                    info["url"] = ""
+                    info["author"] = ""
+                    info["author_url"] = ""
+                    info["licence"] = ""
+                    info["licence_url"] = ""
+                    info["description"] = ""
+                    info["tags"] = ""
+                    info['x'] = 1
+                    info['y'] = 1
+                    info['z'] = 0.1
 
-            if browser_asset_info.is_id_shown:
+                    # import traceback
+                    # traceback.print_exc()
+
+            if info.is_id_shown:
                 row = column.row(align=True)
                 row.operator("atool.open_asset_folder", text='', icon = 'FILE_FOLDER', emboss=False)
-                row.prop(browser_asset_info, "id", text="")
+                row.prop(info, "id", text="")
 
             row = column.row(align=True)
             row.operator("atool.open_attr", icon = 'SYNTAX_OFF', emboss=False).attr_name = "name"
-            row.prop(browser_asset_info, "name", text="")
+            row.prop(info, "name", text="")
 
             row = column.row(align=True)
             row.operator("atool.open_attr", icon = 'FILTER', emboss=False).attr_name = "tags"
-            row.prop(browser_asset_info, "tags", text="")
+            row.prop(info, "tags", text="")
 
             row = column.row(align=True)
             row.operator("atool.open_attr", icon = 'URL', emboss=False).attr_name = "url"
-            row.prop(browser_asset_info, "url", text="")
+            row.prop(info, "url", text="")
 
             row = column.row(align=True)
             row.operator("atool.open_attr", icon = 'TEXT', emboss=False).attr_name = "description"
-            row.prop(browser_asset_info, "description", text="")
+            row.prop(info, "description", text="")
 
             row = column.row(align=True)
             row.operator("atool.open_attr", icon = 'USER', emboss=False).attr_name = "author"
-            row.prop(browser_asset_info, "author", text="")
+            row.prop(info, "author", text="")
 
-            # row = column.row(align=True)
             row.operator("atool.open_attr", icon = 'LINKED', emboss=False).attr_name = "author_url"
-            row.prop(browser_asset_info, "author_url", text="")
+            row.prop(info, "author_url", text="")
 
             row = column.row(align=True)
             row.operator("atool.open_attr", icon = 'COPY_ID', emboss=False).attr_name = "licence"
-            row.prop(browser_asset_info, "licence", text="")
+            row.prop(info, "licence", text="")
 
-            # row = column.row(align=True)
             row.operator("atool.open_attr", icon = 'LINKED', emboss=False).attr_name = "licence_url"
-            row.prop(browser_asset_info, "licence_url", text="")
+            row.prop(info, "licence_url", text="")
+
+            row = column.column(align=True)
+            row.prop(info, "x")
+            row.prop(info, "y")
+            row.prop(info, "z")
 
 
 
@@ -210,6 +227,8 @@ class ATOOL_PT_view_3d_tools(bpy.types.Panel):
         column.operator("atool.distibute")
         column.operator("atool.match_displacement")
         column.operator("atool.dolly_zoom")
+        column.operator("atool.find_missing")
+        column.operator("atool.unrotate")
         
 
 def update_ui():

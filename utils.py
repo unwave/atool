@@ -8,6 +8,15 @@ import functools
 import pathlib
 import re
 import operator
+import tempfile
+import subprocess
+import threading
+import sys
+
+try:
+    from . import asset_parser
+except:
+    import asset_parser
 
 IMAGE_EXTENSIONS = { ".bmp", ".jpeg", ".jpg", ".jp2", ".j2c", ".tga", ".cin", ".dpx", ".exr", ".hdr", ".sgi", ".rgb", ".bw", ".png", ".tiff", ".tif", ".psd", ".dds"}
 GEOMETRY_EXTENSIONS = {}
@@ -27,6 +36,7 @@ class PseudoDirEntry:
 
 def color_to_gray(color):
     return 0.2126*color[0] + 0.7152*color[1] + 0.0722*color[2]
+
 
 @property
 @functools.lru_cache()
@@ -53,7 +63,6 @@ def data(self):
         with self.open(encoding="utf-8") as json_file:
             return json.load(json_file)
     return None
-
 
 @property
 @functools.lru_cache()
@@ -103,46 +112,47 @@ pathlib.Path.type = file_type
 pathlib.Path.is_meta = is_meta
 pathlib.Path.data = data
 
-
-class File_Filter:
+class File_Filter(typing.Dict[str, pathlib.Path] , dict):
     def __init__(self, path: os.DirEntry, ignore: typing.Union[str, typing.Iterable[str]]):
         self.path = path.path
         ignore = {ignore} if isinstance(ignore, str) else set(ignore)
         self.ignore = ignore
-        self.data = {item.name: pathlib.Path(item.path) for item in os.scandir(path.path) if item.name not in ignore}
+
+        for item in os.scandir(path.path):
+            if item.name not in ignore:
+                self[item.name] = pathlib.Path(item.path)
 
     def update(self):
 
-        for name in list(self.data.keys()):
-            if not self.data[name].exists():
-                del self.data[name]
+        for name in list(self.keys()):
+            if not self[name].exists():
+                del self[name]
 
-        ignore = self.ignore | set(self.data.keys())
+        ignore = self.ignore | set(self.keys())
         for file in os.scandir(self.path):
             if file.name not in ignore:
-                self.data[file.name] = pathlib.Path(file.path)
+                self[file.name] = pathlib.Path(file.path)
 
     def __iter__(self):
         return iter(self.get_files())
     
     def get_files(self):
-        return [item for item in self.data.values() if item.is_file()]
+        return [item for item in self.values() if item.is_file()]
         
     def get_folders(self):
-        return [item for item in self.data.values() if item.is_dir()]
+        return [item for item in self.values() if item.is_dir()]
         
     def get_by_type(self, type: typing.Union[str, typing.Iterable[str]]):
         type = {type} if isinstance(type, str) else set(type)
-        return [item for item in self.data.values() if item.type in type]
+        return [item for item in self.values() if item.type in type]
                
     def get_by_name(self, name: typing.Union[str, typing.Iterable[str]]):
         name = {name} if isinstance(name, str) else set(name)
-        return [item for item in self.data.values() if item.name in name]
+        return [item for item in self.values() if item.name in name]
             
     def get_by_extension(self, extension: typing.Union[str, typing.Iterable[str]]):
         extension = {extension} if isinstance(extension, str) else set(extension)
-        return [item for item in self.data.values() if item.suffix in extension]
-
+        return [item for item in self.values() if item.suffix in extension]
 
 
 def move_to_folder(file: typing.Union[str, os.DirEntry], folder:str, create=True):
@@ -162,15 +172,20 @@ def move_to_folder(file: typing.Union[str, os.DirEntry], folder:str, create=True
         return new_path
     raise TypeError(f"The function move_to_folder does not support {str(file)} of type {type(file)}.")
 
-def read_local_file(name, auto=True):
+def read_local_file(name, auto=True) -> typing.Union[str, dict]:
     path = os.path.join(os.path.dirname(os.path.realpath(__file__)), name)
     if not os.path.exists(path):
         return None
-    with open(path, 'r', encoding="utf-8") as file:
-        if not auto:
-            return(file.read())
-        elif path.lower().endswith(".json"):
-            return(json.load(file))
+    try:
+        with open(path, 'r', encoding="utf-8") as file:
+            if not auto:
+                return(file.read())
+            elif path.lower().endswith(".json"):
+                return(json.load(file))
+    except:
+        import traceback
+        traceback.print_exc()
+        return None
 
 def get_files(path, get_folders = False, recursivly = True):
     list = []
@@ -210,21 +225,22 @@ def extract_zip(file: typing.Union[str, typing.IO[bytes]], path = None, extract 
     """
     extracted_files = []
     if path is None:
-        path = file
-    path = os.path.splitext(path)[0]
+        path = os.path.splitext(file)[0]
     to_path = path.replace("/", os.sep)
     if extract:
         os.makedirs(to_path, exist_ok=True)
     with zipfile.ZipFile(file) as zip_file:
         for name in zip_file.namelist():
             if name.endswith(".zip") and recursively:
-                extracted_files.extend(extract_zip(io.BytesIO(zip_file.read(name)), '/'.join((path, name)), extract, recursively))
+                inner_path =  '/'.join((path, name[:-4]))
+                extracted_files.extend(extract_zip(io.BytesIO(zip_file.read(name)), inner_path, extract, recursively))
             else:
                 if extract:
                     extracted_files.append(zip_file.extract(name, to_path))
                 else:
                     extracted_files.append(os.path.join(to_path, name.replace("/", os.sep)))
     return extracted_files
+
 
 class Item_Location:
     def __init__(self, path, iter):
@@ -254,7 +270,6 @@ class Item_Location:
         for fragment in self.path[:-level]:
             parent = parent[fragment]
         return parent
-
 
 def locate_item(iter, item, is_dict_key = False, return_as = None, mode = 'eq'):
     """
@@ -325,3 +340,170 @@ def locate_item(iter, item, is_dict_key = False, return_as = None, mode = 'eq'):
     else:
         return [Item_Location(path, iter) for path in locate(iter, item)]
         
+
+EVERYTHING_EXE = None
+ES_EXE = None
+ES_ERROR = "ES is not available."
+PLATFORM = sys.platform
+
+def init_find():
+
+    global EVERYTHING_EXE
+    global ES_EXE 
+    global ES_ERROR
+
+    if not os.name == 'nt':
+        ES_ERROR = "Current OS is not supported."
+        print(ES_ERROR)
+        return
+
+    es_exe = os.path.join(os.path.dirname(__file__), 'es.exe')
+    if not os.path.exists(es_exe):
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Classes\Everything.FileList\DefaultIcon") as key:
+                EVERYTHING_EXE = winreg.QueryValueEx(key, "")[0].split(",")[0]
+        except:
+            ES_ERROR = "Everything.exe is not found."
+            print(ES_ERROR)
+            return
+    
+        with tempfile.TemporaryDirectory() as temp_dir:
+                is_success ,zip = asset_parser.get_web_file(r"https://www.voidtools.com/ES-1.1.0.18.zip", content_folder = temp_dir)
+
+                if not is_success:
+                    ES_ERROR = "Cannot download es.exe"
+                    print(ES_ERROR)
+                    return
+
+                for file in extract_zip(zip):
+                    if os.path.basename(file) == 'es.exe':
+                        ES_EXE = move_to_folder(file, os.path.dirname(__file__), create = False)
+                
+                if not ES_EXE:
+                    ES_ERROR = "Cannot find es.exe in downloads."
+                    print(ES_ERROR)
+                    return
+    else:
+        ES_EXE = es_exe
+
+if PLATFORM == 'win32':
+    threading.Thread(target=init_find).start()
+else:
+    ES_ERROR = "Current OS is not supported."
+
+def find(names):
+
+    if not ES_EXE:
+        raise BaseException(ES_ERROR)
+
+    query = '|'.join(["*\\" + '"' + name + '"' for name in names])
+        
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_file = os.path.join(temp_dir, "temp.txt")
+        command = ' '.join(['"' + ES_EXE + '"', query, '-export-txt', '"' + temp_file + '"'])
+        subprocess.run(command)
+        with open(temp_file, encoding='utf-8') as text:
+            paths = text.read().split("\n")[:-1]
+
+    return paths
+
+
+def get_closest_path(lost_path, string_paths):
+
+    lost_path = lost_path.lower().split(os.sep)[:-1]
+    paths = [path.lower().split(os.sep)[:-1] for path in string_paths]
+    
+    if os.name == 'nt':
+        lost_path.insert(0, 'root')
+        for path in paths:
+            path.insert(0, 'root')
+
+    lost_reversed = list(reversed(lost_path))
+    def locate_fragment(item):
+        for index, fragment in enumerate(lost_reversed):
+            if fragment == item:
+                return index
+                
+    routs = []
+    for path_index, path in enumerate(paths):
+        for length, item in enumerate(reversed(path), start = 1):
+            index = locate_fragment(item)
+            if index is not None:
+                length += index + 1
+                routs.append((length, path_index))
+                break
+    
+    return string_paths[min(routs)[1]]
+
+
+def os_open(operator, path):
+
+    if PLATFORM == 'win32':
+        os.startfile(path)
+    elif PLATFORM == 'darwin':
+        subprocess.Popen(['open', path])
+    else:
+        try:
+            subprocess.Popen(['xdg-open', path])
+        except OSError:
+            operator.report({'INFO'}, "Current OS is not supported.")
+            import traceback
+            traceback.print_exc()
+
+
+def os_show(operator, files):
+
+    files = [file.lower() for file in files]
+
+    directories = [os.path.dirname(image_path) for image_path in files]
+    directories = {directory: [file for file in files if file.startswith(directory)] for directory in directories}
+
+    if PLATFORM != 'win32':
+        for directory in directories:
+            os_open(operator, directory)
+        return
+
+    import ctypes
+    import ctypes.wintypes
+
+    prototype = ctypes.WINFUNCTYPE(ctypes.POINTER(ctypes.c_int), ctypes.wintypes.LPCWSTR)
+    paramflags = (1, "pszPath"),
+    ILCreateFromPathW = prototype(("ILCreateFromPathW", ctypes.windll.shell32), paramflags)
+
+    ctypes.windll.ole32.CoInitialize(None)
+
+    for directory, files in directories.items():
+    
+        directory_pidl = ILCreateFromPathW(directory)
+        
+        file_pidls = (ctypes.POINTER(ctypes.c_int) * len(files))()
+        for index, file in enumerate(files):
+            file_pidls[index] = ILCreateFromPathW(file)
+
+        ctypes.windll.shell32.SHOpenFolderAndSelectItems(directory_pidl, len(file_pidls), file_pidls, 0)
+        
+        ctypes.windll.shell32.ILFree(directory_pidl)
+        for file_pidl in file_pidls:
+            ctypes.windll.shell32.ILFree(file_pidl)
+            
+    ctypes.windll.ole32.CoUninitialize()
+
+
+def web_open(string , is_url = False):
+
+    starts_with_http = string.startswith("https://") or string.startswith("http://")
+
+    if is_url:
+        if not starts_with_http:
+            url = "https://" + string
+        else:
+            url = string
+    else:
+        if starts_with_http:
+            url = string
+        else:
+            url = fr"https://www.google.com/search?q={string}"
+    
+    import webbrowser
+    webbrowser.open(url, new=2, autoraise=True)

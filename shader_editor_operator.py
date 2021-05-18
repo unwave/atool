@@ -20,7 +20,8 @@ from . import type_definer
 from . import view_3d_operator
 from . bl_utils import Node_Tree_Wrapper, Reference
 from . imohashxx import hashfile
-from . utils import color_to_gray, deduplicate
+from . import utils
+from . import data
 
 # from timeit import default_timer as timer
 
@@ -109,7 +110,7 @@ def get_image_data_blocks(group):
         image_data_blocks = [node.image for node in node_tree.nodes if node.type == 'TEX_IMAGE' and node.image]
         if not image_data_blocks:
             return None
-        return deduplicate(image_data_blocks)
+        return utils.deduplicate(image_data_blocks)
 
 def find_image_block_by_type(blocks , type):
     for block in blocks:
@@ -302,6 +303,7 @@ def ensure_adaptive_subdivision(operator, context, object = None, material = Non
     displacement = output["Displacement"]
     if not displacement or (displacement and displacement.type != 'DISPLACEMENT'):
         displacement = output.i["Displacement"].new("ShaderNodeDisplacement", "Displacement")
+        displacement.space = 'WORLD'
         x, y = output.location
         displacement.location = (x, y - 150)
 
@@ -568,7 +570,7 @@ def normalize_texture(operator, context, new_material = False, node_groups = Non
             map_range.location = (x + offset, y)
             map_range.inputs[1].default_value = minimum
             map_range.inputs[2].default_value = maximum
-            map_range.label = f"Normalized"
+            map_range.label = "Normalized"
 
 
             links.new(to_map_range.outputs[0], map_range.inputs[0])
@@ -578,30 +580,30 @@ def normalize_texture(operator, context, new_material = False, node_groups = Non
 
     return {'FINISHED'}
 
-class ATOOL_OT_normalize_height(bpy.types.Operator, Shader_Editor_Poll):
-    bl_idname = "atool.normalize_height_range"
+class ATOOL_OT_normalize_range(bpy.types.Operator, Shader_Editor_Poll):
+    bl_idname = "atool.normalize_range"
     bl_label = "Normalize:"
-    bl_description = "Normalize a texture range of a AT material or an image node texture."
+    bl_description = "Normalize a texture range of an AT material or an image node texture."
     bl_options = {'REGISTER', 'UNDO'}
 
     normalize_height: bpy.props.BoolProperty(
         name="Height",
-        description="Normalize a MA matearil height range",
+        description="Normalize a AT material height range",
         default = True
         )
     normalize_roughness: bpy.props.BoolProperty(
         name="Roughness",
-        description="Normalize a MA matearil roughness range for manual adjustment",
+        description="Normalize a AT material roughness range",
         default = False
         )
     normalize_specular: bpy.props.BoolProperty(
         name="Specular",
-        description="Normalize a MA matearil specular range for manual adjustment",
+        description="Normalize a AT material specular range",
         default = False
         )
     normalize_separately: bpy.props.BoolProperty(
         name="Separately",
-        description="Normalize texture channels separately",
+        description="Normalize texture channels separately for image nodes",
         default = False
         )
 
@@ -693,9 +695,13 @@ def set_default_settings(operator, context, node_groups):
             settings = {}
             for input_index in range(len(group.inputs)):
                 if group.inputs[input_index].type != 'STRING':
-                    value = group.inputs[input_index].default_value
-                    group.node_tree.inputs[input_index].default_value = value
-                    settings[group.inputs[input_index].name] = value
+                    try:
+                        value = group.inputs[input_index].default_value
+                        group.node_tree.inputs[input_index].default_value = value
+                        settings[group.inputs[input_index].name] = value
+                    except:
+                        import traceback
+                        traceback.print_exc()
 
             default_settings = backward_compatibility_get(group.node_tree, "at_default_settings", "ma_default_settings")
 
@@ -829,7 +835,7 @@ class ATOOL_OT_save_material_settings(bpy.types.Operator, Shader_Editor_Poll):
 
             atool_id = group.node_tree.get("atool_id")
             if atool_id:
-                library = context.window_manager.at_asset_data.data
+                library = context.window_manager.at_asset_data # type: data.AssetData
                 library[atool_id].update_info({"material_settings": material_settings})
                 self.report({'INFO'}, f"The settings have been saved for the library group: {group.name}. ID: {atool_id}")
                 if not self.save_to_database:
@@ -900,7 +906,7 @@ def load_material_settings(operator, context, node_groups = None, node_trees = N
         operator.report({'ERROR'}, e)
         return {'CANCELLED'}
 
-    node_trees.extend(deduplicate([group.node_tree for group in node_groups]))
+    node_trees.extend(utils.deduplicate([group.node_tree for group in node_groups]))
     node_trees = {node_tree: [group for group in node_groups if group.node_tree == node_tree] for node_tree in node_trees}
         
     for node_tree, groups in node_trees.items():
@@ -909,7 +915,7 @@ def load_material_settings(operator, context, node_groups = None, node_trees = N
 
         atool_id = node_tree.get("atool_id")
         if atool_id:
-            library = context.window_manager.at_asset_data.data
+            library = context.window_manager.at_asset_data # type: data.AssetData
             material_settings = library[atool_id].info.get("material_settings")
             if material_settings:
                 operator.report({'INFO'}, f"Settings were loaded for the library material: {node_tree.name}. ID: {atool_id}")
@@ -921,7 +927,7 @@ def load_material_settings(operator, context, node_groups = None, node_trees = N
             if not image_paths:
                 operator.report({'INFO'}, f"No image was found in the material: {node_tree.name}")
                 continue
-            image_paths = deduplicate(image_paths)
+            image_paths = utils.deduplicate(image_paths)
             image_hashes = [hashfile(image_path, hexdigest=True) for image_path in image_paths]
 
             cursor.execute(f"SELECT * FROM settings WHERE id in ({', '.join(['?']*len(image_hashes))})", image_hashes)
@@ -986,33 +992,18 @@ class ATOOL_OT_open_in_file_browser(bpy.types.Operator, Shader_Editor_Poll):
 	
     def execute(self, context):
 
-        platform = sys.platform
-
-        def open_in_file_browser(directory):
-            if platform=='win32':
-                os.startfile(directory)
-            elif platform=='darwin':
-                subprocess.Popen(['open', directory])
-            else:
-                try:
-                    subprocess.Popen(['xdg-open', directory])
-                except OSError:
-                    self.report({'INFO'}, "Current OS is not supported.")
-
         selected_nodes = context.selected_nodes
 
         if not selected_nodes:
             self.report({'INFO'}, "Nothing is selected.")
             return {'CANCELLED'}
 
-        something_relevant = False
-
+        files = []
         for node in selected_nodes:
             if node.type == 'TEX_IMAGE' and node.image:
                 path = get_image_absolute_path(node.image)
                 if os.path.exists(path):
-                    open_in_file_browser(os.path.dirname(path))
-                    something_relevant = True
+                    files.append(path)
                 else:
                     self.report({'INFO'}, f'No image exists in the path "{path}" for the node "{node.name}".')
             elif node.type == 'GROUP':
@@ -1025,15 +1016,15 @@ class ATOOL_OT_open_in_file_browser(bpy.types.Operator, Shader_Editor_Poll):
                 if not image_paths:
                     self.report({'INFO'}, f'No images exist in the paths: {image_paths}.')
                     continue
-                image_paths = list(dict.fromkeys(image_paths))
-                image_directories = [os.path.dirname(image_path) for image_path in image_paths]
-                directory = Counter(image_directories).most_common(1)[0][0]
-                open_in_file_browser(directory)
-                something_relevant = True
 
-        if not something_relevant:
+                files.extend(image_paths)
+
+        if not files:
             self.report({'INFO'}, "The selected nodes do not include any images.")
             return {'CANCELLED'}
+
+        files = utils.deduplicate(files)
+        threading.Thread(target=utils.os_show, args=(self, files,)).start() 
 
         return {'FINISHED'}
 
@@ -1069,12 +1060,14 @@ class ATOOL_OT_transfer_settings(bpy.types.Operator, Shader_Editor_Poll):
         return {'FINISHED'}
 
 
-def get_uv_scale_multiplier(context, object, uv = None, transform = False, triangulate = False):
+def get_uv_scale_multiplier(context, object, uv = None, transform = True, triangulate = False):
 
-    depsgraph = context.evaluated_depsgraph_get()
-
-    bm = bmesh.new()
-    bm.from_object(object, depsgraph)
+    if object.data.is_editmode:
+        bm = bmesh.from_edit_mesh(object.data).copy()
+    else:
+        depsgraph = context.evaluated_depsgraph_get()
+        bm = bmesh.new()
+        bm.from_object(object, depsgraph)
     
     if transform:
         bm.transform(object.matrix_world)
@@ -1088,12 +1081,60 @@ def get_uv_scale_multiplier(context, object, uv = None, transform = False, trian
     else:
         uv_layer = bm.loops.layers.uv.active
 
-    uv_layer = bm.loops.layers.uv.active
     uv_area = sum(area_tri(*(vert[uv_layer].uv for vert in face)) for face in bm.calc_loop_triangles())
     
     bm.free()
     
     return math.sqrt(mesh_area/uv_area)
+
+
+def set_uv_scale_multiplier(operator, context, objects = [], node_trees = {}, transform = True, triangulate = False):
+
+    for object in objects:
+        if object.type != 'MESH':
+            continue
+        if not (object.data and object.data.uv_layers):
+            operator.report({'INFO'}, f"The object '{object.name}' has not uv layers.")
+            continue
+        multiplier = get_uv_scale_multiplier(context, object, None, transform, triangulate)
+        object.at_uv_multiplier = multiplier
+        object.update_tag()
+
+    for node_tree, groups in node_trees.items():
+
+        if not groups:
+            continue
+
+        node_tree = Node_Tree_Wrapper(node_tree)
+
+        for group in groups:
+            group = node_tree[group.name]
+            
+            has_uv_multiplier = False
+
+            input = group["Global Scale"]
+            if input:
+                for node in [input] + input.all_children:
+                    if node.type == 'ATTRIBUTE' and node.attribute_type == 'OBJECT' and node.attribute_name == 'at_uv_multiplier':
+                        has_uv_multiplier = True
+                        break
+
+            if has_uv_multiplier:
+                continue
+
+            attribute = group.i["Global Scale"].new('ShaderNodeAttribute', 'Fac')
+            attribute.label = "UV Multiplier"
+            attribute.attribute_type = 'OBJECT'
+            attribute.attribute_name = 'at_uv_multiplier'
+            for socket in attribute.o:
+                if socket.name != 'Fac':
+                    socket.hide = True
+            attribute.show_options = False
+            x, y = attribute.location
+            attribute.location = (x, y - 2 *21.5)
+
+    context.scene.frame_set(context.scene.frame_current) # update EEVEE viewport
+
 
 class ATOOL_OT_set_uv_scale_multiplier(bpy.types.Operator):
     bl_idname = "atool.set_uv_scale_multiplier"
@@ -1104,12 +1145,18 @@ class ATOOL_OT_set_uv_scale_multiplier(bpy.types.Operator):
     transform: bpy.props.BoolProperty(
         name="Apply Transforms",
         description="Apply the object's transforms",
-        default = False
+        default = True
         )
 
     triangulate: bpy.props.BoolProperty(
         name="Triangulate",
         description="Triangulate the object geometry",
+        default = False
+        )
+
+    only_selected: bpy.props.BoolProperty(
+        name="Only Selected",
+        description="Add UV multiplier inputs only to selected AT node gropus.",
         default = False
         )
 
@@ -1120,22 +1167,24 @@ class ATOOL_OT_set_uv_scale_multiplier(bpy.types.Operator):
             self.report({'INFO'}, "No object selected.")
             return {'CANCELLED'}
 
-        if not (object.data and object.data.uv_layers):
-            self.report({'INFO'}, "The object has not uv layers.")
-            return {'CANCELLED'}
+        selected_objects = context.selected_objects
 
-        self.groups = get_all_at_groups_from_selection(self, context)
-        if not self.groups:
-            return {'CANCELLED'}
+        objects = selected_objects
+        if object not in selected_objects:
+            objects.append(object)
 
-        self.uv = None
-        multiplier = get_uv_scale_multiplier(context, object, self.uv, self.transform, self.triangulate)
-        
-        for group in self.groups:
-            if group:
-                group.inputs["Scale"].default_value = multiplier
+        groups = []
+        if self.only_selected:
+            groups = get_all_at_groups_from_selection(self, context)
+        else:
+            if context.space_data.edit_tree:
+                groups = [node for node in context.space_data.edit_tree.nodes if is_atool_material(node)]
+
+        node_trees = {context.space_data.edit_tree: groups}
+
+        set_uv_scale_multiplier(self, context, objects, node_trees, self.transform, self.triangulate)
+
         self.report({'INFO'}, "UV matching is done.")
-
         return {'FINISHED'}
         
 
@@ -1228,6 +1277,27 @@ def get_definer_config(context):
         config["custom"]["ambient_occlusion"] = ["a"]
 
     return config
+
+
+def apply_dimensions(target, dimensions):
+    node = None
+    node_tree = None
+
+    if target.bl_idname == "ShaderNodeGroup":
+        node = target
+        node_tree = target.node_tree
+    elif target.bl_idname == "ShaderNodeTree":
+        node_tree = target
+
+    default_settings = backward_compatibility_get(node_tree, "at_default_settings", "ma_default_settings")
+
+    for letter, name in (('x', "X Scale"), ('y', "Y Scale"), ('z', "Scale′")):
+        value = dimensions.get(letter)
+        if value:
+            default_settings[name] = value
+            node_tree.inputs[name].default_value = value
+            if node:
+                node.inputs[name].default_value = value
 
 
 def get_at_node_tree(operator, context, material_type_name, is_converting = False):
@@ -1475,9 +1545,9 @@ def get_at_node_tree(operator, context, material_type_name, is_converting = Fals
             operator.report({'INFO'}, f"Imported bitmaps have diffrent aspect ratios, the ratio set to {aspect_ratio}")
 
         if aspect_ratio > 1:
-            inputs["Y Scale"].default_value = aspect_ratio
+            inputs["X Scale"].default_value = aspect_ratio
         elif aspect_ratio < 1:
-            inputs["X Scale"].default_value = 1/aspect_ratio
+            inputs["Y Scale"].default_value = 1/aspect_ratio
 
         for image in images:
             for channel, subtype in image.iter_type():
@@ -1505,7 +1575,7 @@ def apply_material(operator, context, object = None, material = None):
     `use_triplanar`: bool
     `use_untiling`: bool
     `asset_name`: str
-    `height_scale`: float
+    `dimensions`: float
     `atool_id`: str
     `load_settings`: bool
     `ensure_adaptive_subdivision`: bool
@@ -1520,16 +1590,16 @@ def apply_material(operator, context, object = None, material = None):
     node_tree = get_at_node_tree(operator ,context, material_type)
     node_tree.name = operator.asset_name if operator.asset_name else "M_" + operator.material_name
 
-    if operator.height_scale != None:
-        node_tree.inputs["Scale′"].default_value = operator.height_scale
-
     if operator.atool_id:
         node_tree["atool_id"] = operator.atool_id
 
     if operator.load_settings:
         load_material_settings(operator, context, node_trees = [node_tree])
 
-    if not object:
+    if operator.dimensions:
+        apply_dimensions(node_tree, operator.dimensions)
+
+    if not (object and object.data and hasattr(object.data, "materials")):
         operator.report({'INFO'}, "The material was added as a node group.")
         return {'FINISHED'}
 
@@ -1575,14 +1645,17 @@ def apply_material(operator, context, object = None, material = None):
             if subtype in {"diffuse", "albedo"}:
                 material.diffuse_color = image.dominant_color[channel] + [1]
             elif subtype == "roughness":
-                material.roughness = color_to_gray(image.dominant_color[channel])
+                material.roughness = utils.color_to_gray(image.dominant_color[channel])
             elif subtype == "gloss":
-                material.roughness = 1 - color_to_gray(image.dominant_color[channel])
+                material.roughness = 1 - utils.color_to_gray(image.dominant_color[channel])
             elif subtype == "metallic":
-                material.metallic = color_to_gray(image.dominant_color[channel])
+                material.metallic = utils.color_to_gray(image.dominant_color[channel])
 
     if operator.ensure_adaptive_subdivision:
         ensure_adaptive_subdivision(operator, context, object, material)
+
+    if operator.do_set_uv_scale_multiplier:
+        set_uv_scale_multiplier(operator, context, (object,), {material.node_tree: (node_group,)}, operator.uv_multiplier_transform, operator.uv_multiplier_triangulate)
 
     return {'FINISHED'}
 
@@ -1620,6 +1693,23 @@ class Material_Import_Properties:
         min=1
         )
 
+    do_set_uv_scale_multiplier: bpy.props.BoolProperty(
+        name="Add UV Multiplier",
+        description="Calculate and apply UV multiplier",
+        default = True
+        )
+    uv_multiplier_transform: bpy.props.BoolProperty(
+        name="UV Multiplier: Apply Transforms",
+        description="Apply the object's transforms",
+        default = True
+        )
+    uv_multiplier_triangulate: bpy.props.BoolProperty(
+        name="UV Multiplier: Triangulate",
+        description="Triangulate the object geometry",
+        default = False
+        )
+
+
     load_settings: bpy.props.BoolProperty(
         name="Load Settings",
         description="Load the imported material's settings",
@@ -1631,14 +1721,21 @@ class Material_Import_Properties:
 
         layout.prop(self, "use_untiling")
         layout.prop(self, "use_triplanar")
-
         layout.separator()
+
         layout.prop(self, "is_y_minus_normal_map")
         layout.prop(self, "load_settings")
+
         layout.prop(self, "ensure_adaptive_subdivision")
         if self.ensure_adaptive_subdivision:
             layout.prop(self, "preview_dicing_rate")
             layout.prop(self, "offscreen_dicing_scale")
+
+        layout.prop(self, "do_set_uv_scale_multiplier")
+        if self.do_set_uv_scale_multiplier:
+            layout.prop(self, "uv_multiplier_transform")
+            layout.prop(self, "uv_multiplier_triangulate")
+        
 
 
 class ATOOL_OT_apply_material(bpy.types.Operator, ImportHelper, Material_Import_Properties):
@@ -1666,7 +1763,7 @@ class ATOOL_OT_apply_material(bpy.types.Operator, ImportHelper, Material_Import_
 
     def execute(self, context):
 
-        self.height_scale = None
+        self.dimensions = None
         self.asset_name = None
         self.atool_id = None
 
@@ -1785,7 +1882,7 @@ class ATOOL_OT_convert_material(bpy.types.Operator, Shader_Editor_Poll):
         if not groups:
             return {'CANCELLED'}
 
-        node_trees = deduplicate([group.node_tree for group in groups])
+        node_trees = utils.deduplicate([group.node_tree for group in groups])
         node_trees = {node_tree: [group for group in groups if group.node_tree == node_tree] for node_tree in node_trees}
 
         self.is_y_minus_normal_map = None
@@ -1810,7 +1907,11 @@ class ATOOL_OT_convert_material(bpy.types.Operator, Shader_Editor_Poll):
             node_tree = get_at_node_tree(self, context, type, is_converting = True)
 
             default_settings = backward_compatibility_get(initial_node_tree, "at_default_settings", "ma_default_settings")
+            if not default_settings:
+                set_default_settings(self, context, groups)
+                default_settings = initial_node_tree["at_default_settings"]
             node_tree["at_default_settings"] = default_settings.to_dict()
+                
             
             for name, value in default_settings.items():
                 try: node_tree.inputs[name].default_value = value
@@ -1901,11 +2002,7 @@ class ATOOL_OT_replace_material(bpy.types.Operator, Shader_Editor_Poll):
         info = asset.info
         self.atool_id = asset.id
 
-        self.height_scale = None
-        dimensions = info.get("dimensions")
-        if dimensions:
-            x, y, z = dimensions
-            self.height_scale = z * min(x, y)
+        self.dimensions = info.get("dimensions")
 
         self.asset_name = info.get("name")
 
@@ -1971,15 +2068,12 @@ class ATOOL_OT_replace_material(bpy.types.Operator, Shader_Editor_Poll):
                 types[type] = [group]
         types = types
         
-        node_trees = deduplicate([group.node_tree for group in groups])
+        node_trees = utils.deduplicate([group.node_tree for group in groups])
 
         for type, groups in types.items():
 
             node_tree = get_at_node_tree(self, context, MAT_TYPES[type])
             node_tree.name = self.asset_name if self.asset_name else "M_" + self.material_name
-
-            if self.height_scale != None:
-                node_tree.inputs["Scale′"].default_value = self.height_scale
 
             if self.atool_id:
                 node_tree["atool_id"] = self.atool_id
@@ -1987,8 +2081,11 @@ class ATOOL_OT_replace_material(bpy.types.Operator, Shader_Editor_Poll):
             if self.load_settings:
                 load_material_settings(self, context, node_trees = [node_tree])
 
+            if self.dimensions:
+                apply_dimensions(node_tree, self.dimensions)
+
             if self.replace_all_users:
-                for old_node_tree in deduplicate([group.node_tree for group in groups]):
+                for old_node_tree in utils.deduplicate([group.node_tree for group in groups]):
                     if not old_node_tree:
                         continue
                     old_node_tree.user_remap(node_tree)
