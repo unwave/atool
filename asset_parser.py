@@ -788,8 +788,9 @@ def get_megascan_info_from_json(mega_info):
     if not x and not y:
         scan_area = meta.get("scanArea")
         if not scan_area:
-            sizes = utils.locate_item(mega_info, "physicalSize", True, True)
-            scan_area = Counter(sizes).most_common(1)[0][0]
+            sizes = utils.locate_item(mega_info, "physicalSize", is_dict_key=True, return_as='data')
+            if sizes:
+                scan_area = Counter(sizes).most_common(1)[0][0]
         if scan_area:
             sizes = number_pattern.findall(scan_area)
             if len(sizes) == 2:

@@ -3,7 +3,7 @@ import math
 import os
 import queue
 import subprocess
-import sys
+import re
 import threading
 import typing
 from datetime import datetime
@@ -528,6 +528,11 @@ class ATOOL_OT_open_attr(bpy.types.Operator, Object_Mode_Poll):
 
         if isinstance(attr, list):
             attr = ' '.join(attr)
+
+        if "quixel.com/megascans/home" in attr:
+            match = re.search(r"(?<=assetId=)[a-zA-Z0-9]+", attr)
+            if match:
+                attr += f'&search={match.group(0)}'
             
         utils.web_open(attr)
             
