@@ -266,7 +266,11 @@ class Asset:
         len(self.preview.image_pixels_float)
         self.preview.icon_pixels_float = []
 
-    def reload_preview(self):
+    def reload_preview(self, context):
+        if not self.preview:
+            del self.__dict__['icon_id']
+            self.icon_id
+            update_search(context.window_manager, context)
         self.preview.reload()
         len(self.preview.image_pixels_float)
         self.preview.icon_pixels_float = []
@@ -1003,11 +1007,10 @@ class AssetData(typing.Dict[str, Asset], dict):
                 asset = Asset.default(utils.PseudoDirEntry(asset_folder))
                 id = asset.id
                 self[id] = asset
-
-        asset.reload_preview()
-
+ 
+        asset.reload_preview(context)
         update_ui()
-        update_search(context.window_manager ,context)
+        update_search(context.window_manager, context)
 
         return id
 
@@ -1047,4 +1050,4 @@ class AssetData(typing.Dict[str, Asset], dict):
     def icon_from_clipboard(self, id, context): 
         result = image_utils.save_as_icon_from_clipboard(self[id].path)
         if result:
-            self[id].reload_preview()
+            self[id].reload_preview(context)

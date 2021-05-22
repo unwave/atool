@@ -2,8 +2,6 @@ import bpy
 from . shader_editor_operator import draw_import_config
 from . import data
 
-current_asset_id = None
-current_icon_id = None
 current_browser_asset_id = None
 
 
@@ -233,12 +231,7 @@ class ATOOL_PT_view_3d_tools(bpy.types.Panel):
         
 
 def update_ui():
-    global current_asset_id
-    global current_icon_id
     global current_browser_asset_id
-
-    current_asset_id = None
-    current_icon_id = None
     current_browser_asset_id = None
 
 """
