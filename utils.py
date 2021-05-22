@@ -156,21 +156,26 @@ class File_Filter(typing.Dict[str, pathlib.Path] , dict):
 
 
 def move_to_folder(file: typing.Union[str, os.DirEntry], folder:str, create=True):
-    if create:
-        os.makedirs(folder, exist_ok=True)
+    
     if isinstance(file, str):
+        old_path = file
         new_path = os.path.join(folder, os.path.basename(file))
-        shutil.move(file, new_path)
-        return new_path
     elif isinstance(file, pathlib.PurePath):
+        old_path = str(file)
         new_path = os.path.join(folder, file.name)
-        shutil.move(str(file), new_path)
-        return new_path
     elif isinstance(file, (os.DirEntry, PseudoDirEntry)):
+        old_path = file.path
         new_path = os.path.join(folder, file.name)
-        shutil.move(file.path, new_path)
-        return new_path
-    raise TypeError(f"The function move_to_folder does not support {str(file)} of type {type(file)}.")
+    else:
+        raise TypeError(f"The function move_to_folder does not support {str(file)} of type {type(file)}.")
+
+    if old_path != new_path:
+        if create:
+            os.makedirs(folder, exist_ok=True)
+        shutil.move(old_path, new_path)
+
+    return new_path
+
 
 def read_local_file(name, auto=True) -> typing.Union[str, dict]:
     path = os.path.join(os.path.dirname(os.path.realpath(__file__)), name)
