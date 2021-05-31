@@ -359,7 +359,6 @@ def init_find():
 
     if not os.name == 'nt':
         ES_ERROR = "Current OS is not supported."
-        print(ES_ERROR)
         return
 
     es_exe = os.path.join(os.path.dirname(__file__), 'es.exe')
@@ -391,11 +390,7 @@ def init_find():
                     return
     else:
         ES_EXE = es_exe
-
-if PLATFORM == 'win32':
-    threading.Thread(target=init_find).start()
-else:
-    ES_ERROR = "Current OS is not supported."
+        
 
 def find(names):
 

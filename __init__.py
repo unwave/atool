@@ -27,6 +27,7 @@ log.addHandler(log_handler)
 
 import typing
 import sys
+import os
 import threading
 import time
 
@@ -45,7 +46,9 @@ def ensure_site_packages(packages: typing.List[typing.Tuple[str, str]]):
     import site
     import importlib
 
-    sys.path.append(site.getusersitepackages())
+    user_site_packages = site.getusersitepackages()
+    os.makedirs(user_site_packages, exist_ok = True)
+    sys.path.append(user_site_packages)
 
     modules_to_install = [module[1] for module in packages if not importlib.util.find_spec(module[0])]   
 
@@ -127,15 +130,17 @@ def register():
     def first_search():
         while importing.is_alive():
             time.sleep(0.1)
-        wm = bpy.context.window_manager
-        wm.at_search = ""
-        update_search(wm, None)
+        if not bpy.app.background:
+            wm = bpy.context.window_manager
+            wm.at_search = ""
+            update_search(wm, None)
 
     @persistent
     def load_handler(dummy):
         threading.Thread(target=first_search).start()
     bpy.app.handlers.load_post.append(load_handler)
 
+    threading.Thread(target=utils.init_find).start()
 
     register_time = timer() - start
     log.info("register time:\t" + str(register_time))

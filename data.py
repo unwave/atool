@@ -250,7 +250,7 @@ class Asset:
         self.icon = os.path.join(self.path, "__icon__.png")
         self.lock = threading.RLock()
 
-        if os.path.exists(self.icon):
+        if os.path.exists(self.icon) and not bpy.app.background:
             self.pre_load_icon()
 
     @cached_property
