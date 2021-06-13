@@ -44,7 +44,7 @@ def ensure_site_packages(packages: typing.List[typing.Tuple[str, str]]):
         return
 
     import site
-    import importlib
+    import importlib.util
 
     user_site_packages = site.getusersitepackages()
     os.makedirs(user_site_packages, exist_ok = True)
@@ -124,27 +124,12 @@ def register():
     wm["at_asset_previews"] = 0
     wm["at_current_page"] = 1
 
-    importing = threading.Thread(target=wm.at_asset_data.update)
-    importing.start()
-
-    def first_search():
-        while importing.is_alive():
-            time.sleep(0.1)
-        if not bpy.app.background:
-            wm = bpy.context.window_manager
-            wm.at_search = ""
-            update_search(wm, None)
-
-    @persistent
-    def load_handler(dummy):
-        threading.Thread(target=first_search).start()
-    bpy.app.handlers.load_post.append(load_handler)
-
-    threading.Thread(target=utils.init_find).start()
+    threading.Thread(target=wm.at_asset_data.update, args=(bpy.context,), daemon=True).start()
+    threading.Thread(target=utils.init_find, daemon=True).start()
 
     register_time = timer() - start
-    log.info("register time:\t" + str(register_time))
-    log.info("all time:\t\t" + str(register_time + init_time))
+    log.info(f"register time:\t {register_time:.2f} sec")
+    log.info(f"all time:\t\t {register_time + init_time:.2f} sec")
 
 
 def unregister():
@@ -166,4 +151,4 @@ def unregister():
     del bpy.types.Object.at_uv_multiplier
 
 init_time = timer() - start
-log.info("__init__ time:\t" + str(init_time))
+log.info(f"__init__ time:\t {init_time:.2f} sec")

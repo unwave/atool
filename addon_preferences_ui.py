@@ -2,18 +2,30 @@ import bpy
 import threading
 from . import addon_updater_ops
 
+def update_library_path(self, context):
+    asset_data = context.window_manager.at_asset_data
+    asset_data.library = self.library_path
+    threading.Thread(target=asset_data.update_library, args=(context,), daemon=True).start()
+
+def update_auto_path(self, context):
+    asset_data = context.window_manager.at_asset_data
+    asset_data.auto = self.auto_path
+    threading.Thread(target=asset_data.update_auto, args=(context,), daemon=True).start()
+
 class ATOOL_PT_addon_preferences(bpy.types.AddonPreferences):
     bl_idname = __package__
 
     library_path: bpy.props.StringProperty(
         name="Library",
-        subtype='FILE_PATH',
-        description="A path to a library folder"
+        subtype='DIR_PATH',
+        description="A path to a library folder",
+        update=update_library_path
     )
     auto_path: bpy.props.StringProperty(
         name="Auto",
-        subtype='FILE_PATH',
-        description="A path to folder to be autoprocessed on the startup"
+        subtype='DIR_PATH',
+        description="A path to folder to be autoprocessed on the startup",
+        update=update_auto_path
     )
 
     auto_check_update: bpy.props.BoolProperty(
@@ -71,6 +83,6 @@ class ATOOL_OT_update_data_paths(bpy.types.Operator):
         asset_data.library = addon_preferences.library_path
         asset_data.auto = addon_preferences.auto_path
 
-        threading.Thread(target=asset_data.update).start()
+        threading.Thread(target=asset_data.update, args=(context,), daemon=True).start()
 
         return {"FINISHED"}

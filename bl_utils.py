@@ -1,13 +1,27 @@
 from __future__ import annotations
 import operator
+from re import A
 import typing
 import os
+import subprocess
+import time
+import math
 
 import bpy
+import mathutils
+from cached_property import cached_property
+import blf
+
+try:
+    from . import type_definer
+except:
+    import type_definer
 
 DEFAULT_ATTRS = {'__doc__', '__module__', '__slots__', 'bl_description', 'bl_height_default', 'bl_height_max', 'bl_height_min', 'bl_icon', 'bl_idname', 'bl_label', 'bl_rna', 'bl_static_type', 'bl_width_default', 'bl_width_max', 'bl_width_min', 'color', 'dimensions', 'draw_buttons', 'draw_buttons_ext', 'height', 'hide', 'input_template', 'inputs', 'internal_links', 'is_registered_node_type', 'label', 'location', 'mute', 'name', 'output_template', 'outputs', 'parent', 'poll', 'poll_instance', 'rna_type', 'select', 'show_options', 'show_preview', 'show_texture', 'socket_value_update', 'type', 'update', 'use_custom_color', 'width', 'width_hidden'}
 INNER_ATTRS = {'texture_mapping', 'color_mapping'}
 NOT_EXPOSED_ATTRS  = DEFAULT_ATTRS | INNER_ATTRS
+
+DIR_PATH = os.path.dirname(os.path.realpath(__file__))
 
 def lerp(value, in_min = 0, in_max = 1, out_min = 0, out_max = 1):
     return out_min + (value - in_min) / (in_max - in_min) * (out_max - out_min)
@@ -81,7 +95,7 @@ class Socket_Wrapper():
         self.join(new_socket)        
         return new_node
     
-    def join(self, socket, move = True):
+    def join(self, socket: Socket_Wrapper, move = True):
 
         bl_node_tree = self.__data__.id_data
         bl_links = bl_node_tree.links
@@ -467,28 +481,51 @@ class Node_Wrapper:
             }
         return pbr
 
+    def get_pbr_socket(self, map_type):
+        if map_type == "albedo":
+            return self.inputs["Base Color"]
+        elif map_type == "ambient_occlusion":
+            pass
+        elif map_type == "bump":
+            bump = self.inputs["Normal"].new('ShaderNodeBump')
+            return bump.inputs['Height']
+        elif map_type == "diffuse":
+            return self.inputs["Base Color"]
+        elif map_type == "displacement":
+            pass
+        elif map_type == "emissive":
+            return self.inputs["Emission"]
+        elif map_type == "gloss":
+            invert = self.inputs["Roughness"].new('ShaderNodeInvert')
+            return invert.inputs['Color']
+        elif map_type == "metallic":
+            return self.inputs['Metallic']
+        elif map_type == "normal":
+            normal_map = self.inputs["Normal"].new('ShaderNodeNormalMap')
+            return normal_map.inputs['Color']
+        elif map_type == "opacity":
+            return self.inputs['Alpha']
+        elif map_type == "roughness":
+            return self.inputs['Roughness']
+        elif map_type == "specular":
+            return self.inputs['Specular']
 
-class Node_Tree_Wrapper:
+class Node_Tree_Wrapper(typing.Dict[str, Node_Wrapper], dict):
     def __init__(self, node_tree):
               
         self.node_tree = node_tree
         self.links = node_tree.links
+        self.nodes = node_tree.nodes
 
-        self.nodes: typing.Dict[str, Node_Wrapper]
-        self.nodes = {}
-
-        self.output: Node_Wrapper
-        self.output = None
-
-        for node in self.node_tree.nodes:
-            self.nodes[node.name] = Node_Wrapper(node)
+        for node in self.nodes:
+            self[node.name] = Node_Wrapper(node)
         
         for link in self.links:
             if link.is_hidden or not link.is_valid:
                 continue
             
-            to_node = self.nodes[link.to_node.name]
-            from_node = self.nodes[link.from_node.name]
+            to_node = self[link.to_node.name]
+            from_node = self[link.from_node.name]
 
             to_socket = link.to_socket
             from_socket = link.from_socket
@@ -496,21 +533,32 @@ class Node_Tree_Wrapper:
             to_node.add_input(to_socket, from_node, from_socket)
             from_node.add_output(from_socket, to_node, to_socket)
 
-        
+    @property
+    def output(self):
         for target in ('ALL', 'CYCLES', 'EEVEE'):
-            active_output = node_tree.get_output_node(target)
+            active_output = self.node_tree.get_output_node(target)
             if active_output:
-                self.output = self.nodes[active_output.name]
-                break
-
-    def __getitem__(self, name) -> Node_Wrapper:
-        return self.nodes[name]
+                return self[active_output.name]
 
     def __iter__(self) -> typing.Iterator[Node_Wrapper]:
-        return iter(self.nodes.values())
+        return iter(self.values())
 
     def get_by_type(self, type) -> typing.List[Node_Wrapper]:
-        return [node for node in self.nodes.values() if node.type == type]
+        return [node for node in self.values() if node.type == type]
+
+    def new(self, type):
+        node = Node_Wrapper(self.nodes.new(type))
+        self[node.name] = node
+        return node
+
+    @cached_property
+    def displacement_input(self) -> Socket_Wrapper:
+        output = self.output
+        displacement = output.i["Displacement"].new("ShaderNodeDisplacement", "Displacement")
+        displacement.space = 'WORLD'
+        x, y = output.location
+        displacement.location = (x, y - 150)
+        return displacement.i["Height"]
 
 
 class Reference:
@@ -598,3 +646,352 @@ class Missing_File:
         block = self.block.get()
         block.filepath = self.closest_path
         block.reload()
+
+
+def get_material(textures: typing.List[str], name = 'New Material', use_displacement = False, displacement_scale = 0.1, invert_normal_y = {}, use_fake_user = False, type_definer_config = {'is_rgb_plus_alpha': True}):
+    material = bpy.data.materials.new(name=name)
+    material.use_nodes = True
+    material.use_fake_user = use_fake_user
+    material.cycles.displacement_method = 'DISPLACEMENT'
+
+    textures_dict = {}
+    for texture in textures:
+        texture_type = type_definer.get_type(os.path.basename(texture), type_definer_config)
+        textures_dict[texture] = texture_type
+            
+    node_tree = Node_Tree_Wrapper(material.node_tree)
+    principled = node_tree.get_by_type('BSDF_PRINCIPLED')[0]
+
+    for path, type in textures_dict.items():
+        if not type:
+            continue
+        
+        if 'opacity' in type:
+            material.blend_method = 'CLIP'
+        
+        image_node = node_tree.new('ShaderNodeTexImage')
+        image = bpy.data.images.load(filepath = path, check_existing=True)
+        image_node.image = image
+
+        def set_displacement(output):
+            displacement_input = node_tree.displacement_input # type: Socket_Wrapper
+            displacement_input.owner.i['Scale'].default_value = displacement_scale
+            displacement_input.join(output, move = False)
+        
+        if type[0] not in ("diffuse", "albedo", "emissive", "ambient_occlusion"):
+            image.colorspace_settings.name = 'Non-Color'
+        
+        is_moved = False
+        type_len = len(type)
+        
+        if type_len in (1, 2):
+            subtype = type[0]
+            output = image_node.outputs[0]
+            
+            if subtype == 'normal' and invert_normal_y[path]:
+                mix = output.new('ShaderNodeMixRGB', 'Color1')
+                mix.blend_type = 'DIFFERENCE'
+                mix.inputs['Fac'].default_value = 1
+                mix.inputs['Color2'].default_value = (0, 1, 0, 1)
+                output = mix.outputs['Color']
+
+            if use_displacement and subtype == 'displacement':
+                set_displacement(output)
+                continue
+            
+            socket = principled.get_pbr_socket(subtype)
+            if socket:
+                socket.join(output, move = not is_moved)
+                is_moved = True
+                
+        elif type_len in (3, 4):
+            separate = image_node.outputs[0].new('ShaderNodeSeparateRGB')
+            for index, subtype in enumerate(type):
+                if index == 3:
+                    break
+
+                output = separate.outputs[index]
+
+                if use_displacement and subtype == 'displacement':
+                    set_displacement(output)
+                    continue
+
+                socket = principled.get_pbr_socket(subtype)
+                if socket:
+                    socket.join(output, move = not is_moved)
+                    is_moved = True
+                    
+        if type_len in (2, 4):
+            image.alpha_mode = 'CHANNEL_PACKED'
+
+            subtype = type[type_len - 1]
+            output = image_node.outputs['Alpha']
+
+            if use_displacement and subtype == 'displacement':
+                set_displacement(output)
+                continue
+
+            input_alpha = principled.get_pbr_socket(subtype)
+            if input_alpha:
+                input_alpha.join(output, move = not is_moved)
+
+    image_nodes = [node for node in node_tree.node_tree.nodes if node.type == 'TEX_IMAGE']
+    x_locations = [node.location[0] for node in image_nodes]
+    min_x_location = min(x_locations)
+    for node in image_nodes:
+        x, y = node.location
+        node.location = (min_x_location, y)
+
+    return material
+
+def get_all_images(node_tree):
+    all_images = []
+    for node in node_tree.nodes:
+        if node.type == 'TEX_IMAGE' and node.image:
+            all_images.append(bpy.path.abspath(node.image.filepath))
+        elif node.type == 'GROUP' and node.node_tree:
+            all_images.extend(get_all_images(node.node_tree))
+    return all_images
+
+def arrage_by_materials(objects: typing.Iterable[bpy.types.Object], by_materials = True, by_images = True):
+
+    sets = {} # type: typing.Dict[frozenset, typing.List[bpy.types.Object]]
+    sets['empty'] = []
+
+    def append(object):
+        
+        materials = object.data.materials
+        if not materials:
+            sets['empty'].append(object)
+            return
+
+        object_set = []
+        
+        if by_images:
+            all_images = []
+            for material in materials:
+                all_images.extend(get_all_images(material.node_tree))
+            object_set.extend(all_images)
+        
+        if by_materials:
+            object_set.extend(materials)
+
+        if not object_set:
+            sets['empty'].append(object)
+            return
+
+        object_set = frozenset(object_set)
+        
+        for set in sets:
+            if object_set.isdisjoint(set):
+                continue
+                
+            if object_set.issubset(set):
+                sets[set].append(object)
+            else:
+                sets[set].append(object)
+                sets[set|object_set] = sets[set]
+                del sets[set]
+                
+            return
+            
+        sets[object_set] = [object]
+
+    for object in objects:
+        append(object)
+
+    if not sets['empty']:
+        del sets['empty']
+        
+    last_y = 0
+    last_offset = 0
+    y_offset = 0
+
+    for i, objects in enumerate(sets.values()):
+        
+        xs = []
+        ys = []
+        for object in objects:
+            x, y, z = object.dimensions # not available for new meshes ?
+            xs.append(x)
+            ys.append(y)
+        x = max(xs)
+        y = max(ys)
+        
+        if i != 0:
+            y_offset = max(y, last_y) + last_offset
+
+        last_y = y
+        last_offset = y_offset
+            
+        for j, object in enumerate(objects):
+            object.location = (j*x,  y_offset, 0)
+
+
+def run_blender(filepath: str = None, script: str = None, argv: list = None, use_atool = True, library_path: str = None, stdout = subprocess.DEVNULL):
+
+    args = [bpy.app.binary_path, '-b', '--factory-startup']
+
+    if filepath:
+        args.append(filepath)
+
+    if script:
+        args.extend(('--python', script))
+
+    args.append('--')
+
+    if use_atool:
+        atool_path = f'"{DIR_PATH}"' if " " in DIR_PATH else DIR_PATH
+        args.extend(('-atool_path', atool_path))
+        if library_path:
+            library_path = f'"{library_path}"' if " " in library_path else library_path
+            args.extend(('-atool_library_path', library_path))
+        
+    if argv:
+        args.extend(argv)
+
+    return subprocess.run(args, stdout=stdout, check = True)
+
+
+def get_world_dimensions(objects: typing.Iterable[bpy.types.Object]):
+    
+    vertices = []
+    for o in objects:
+        bound_box = o.bound_box
+        matrix_world = o.matrix_world
+        vertices.extend([matrix_world @ mathutils.Vector(v) for v in bound_box])
+        
+    xs = []
+    ys = []
+    zs = []
+    for v in vertices:
+        xs.append(v[0])
+        ys.append(v[1])
+        zs.append(v[2])
+
+    max_x = max(xs)
+    min_x = min(xs)
+    
+    max_y = max(ys)
+    min_y = min(ys)
+    
+    max_z = max(zs)
+    min_z = min(zs)
+        
+    x = abs(max_x - min_x)
+    y = abs(max_y - min_y)
+    z = abs(max_z - min_z)
+
+    loc_x = (max_x + min_x)/2
+    loc_y = (max_y + min_y)/2
+    loc_z = (max_z + min_z)/2
+    
+    return (x, y, z), (loc_x, loc_y, loc_z)
+
+
+class Progress_Drawer:
+
+    def draw_callback(self):
+
+        blf.position(0, 15, 30 + self.indent * 30, 0)
+        blf.size(0, 20, 72)
+        blf.draw(0, self.string)
+
+    def __iter__(self):
+        total = self.total
+        prefix = self.prefix
+
+        start_time = time.time()
+        past_time = 0
+
+        show_mult = 1
+        if self.is_file:
+            show_mult = CHUNK_SIZE
+
+        if not self.total:
+            total = len(self.iterator)
+
+        for index, item in enumerate(self.iterator, start = 1):
+            yield item
+
+            current_time = time.time()
+
+            past_time = int(current_time - start_time)
+            past_min, past_sec = divmod(past_time, 60)
+
+            remain_time = int(past_time/index * (total - index))
+            remain_min, remain_sec = divmod(remain_time, 60)
+
+            total_time = int(past_time/index * (total - index) + past_time)
+            total_min, total_sec = divmod(int(total_time), 60)
+
+            self.string = f'{prefix}: {int(index/total * 100)}% | {index*show_mult}/{total*show_mult} | Past: {past_min}:{past_sec:02d} Remain: {remain_min}:{remain_sec:02d} Total: {total_min}:{total_sec:02d}'
+
+        # self.string = ''.join(( prefix, str(index), '/', str(total), ' | Past: ', str(past_min), ':', str(past_sec), ' Remain: ', str(remain_min), ':', str(remain_sec) ))
+
+    def __init__(self, iterator: typing.Iterable, total: int = None, prefix = '', indent = 0, is_file = False):
+        self.iterator = iterator
+        self.total = total
+        self.prefix = prefix
+        self.indent = indent
+        self.is_file = is_file
+
+        self.string = ''
+    
+    def __enter__(self):
+        self.handler = bpy.types.SpaceView3D.draw_handler_add(self.draw_callback, tuple(), 'WINDOW', 'POST_PIXEL')
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        bpy.types.SpaceView3D.draw_handler_remove(self.handler, 'WINDOW')
+
+def get_regions() -> typing.List[bpy.types.Region]:
+    if bpy.app.background:
+        return None
+    
+    regions = []
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas: 
+            if area.type == 'VIEW_3D':
+                for region in area.regions:
+                    if region.type == 'WINDOW':
+                        regions.append(region)
+    return regions
+
+def iter_with_progress(iterator: typing.Iterable, indent = 0, prefix = '', total: int = None):
+    regions = get_regions()
+
+    if not regions:
+        for i in iterator:
+            yield i
+        return
+
+    with Progress_Drawer(iterator, prefix = prefix, total = total, indent = indent) as drawer:
+        for i in drawer:
+            for region in regions:
+                region.tag_redraw()
+            yield i
+        for region in regions:
+            region.tag_redraw()
+        
+CHUNK_SIZE = 4096
+
+def download_with_progress(response, path: str, total: int, region: bpy.types.Region = None, indent = 0, prefix = ''):
+    regions = get_regions()
+
+    if not regions or not total:
+        with open(path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+                f.write(chunk)
+        return
+
+    total_cunks = math.ceil(total/CHUNK_SIZE)
+
+    with Progress_Drawer(range(total_cunks), is_file = True, prefix = prefix, total = total_cunks, indent = indent) as drawer:
+        with open(path, "wb") as f:
+            for i, chunk in zip(drawer, response.iter_content(chunk_size=4096)):
+                for region in regions:
+                    region.tag_redraw()
+                f.write(chunk)
+            for region in regions:
+                region.tag_redraw()

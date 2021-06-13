@@ -1,5 +1,8 @@
 import bpy
-from . shader_editor_operator import draw_import_config
+
+from . import utils
+from . import bl_utils
+from . import shader_editor_operator
 from . import data
 
 current_browser_asset_id = None
@@ -14,7 +17,6 @@ class ATOOL_PT_search(bpy.types.Panel):
 
     def draw(self, context):
         column = self.layout.column()
-        # , text='Go to page:'
         column.prop(context.window_manager, "at_current_page")
         column.prop(context.window_manager, "at_assets_per_page")
 
@@ -27,7 +29,7 @@ class ATOOL_PT_import_config(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         layout.alignment = 'LEFT'
-        draw_import_config(context, layout)
+        shader_editor_operator.draw_import_config(context, layout)
 
 class ATOOL_MT_actions(bpy.types.Menu):
     bl_idname = "ATOOL_MT_actions"
@@ -41,16 +43,31 @@ class ATOOL_MT_actions(bpy.types.Menu):
         layout.operator("atool.open_info", icon='FILE_TEXT')
         layout.separator()
         layout.operator("atool.icon_from_clipboard", icon='IMAGE_DATA')
+        layout.operator("atool.render_icon", icon='RESTRICT_RENDER_OFF')
+        
         layout.operator("atool.reload_asset", text='Reload', icon='FILE_REFRESH').do_reimport = False
         layout.operator("atool.get_web_info", icon='INFO')
         layout.operator("atool.reload_asset", text='Reimport', icon='IMPORT').do_reimport = True
+        layout.operator("atool.move_asset_to_desktop", icon='SCREEN_BACK')
         layout.separator()
+        layout.operator("atool.import_files", icon="SHADING_TEXTURE")
         layout.operator("atool.process_auto", text = "Process Auto Folder", icon="NEWFOLDER")
         layout.operator("atool.get_web_asset", icon="URL")
         layout.separator()
         layout.popover("ATOOL_PT_import_config")
         
-        
+class ATOOL_MT_unreal(bpy.types.Menu):
+    bl_idname = "ATOOL_MT_unreal"
+    bl_label = "Unreal"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("atool.import_unreal", icon="IMPORT")
+        layout.operator("atool.copy_unreal_script", icon="COPYDOWN")
+        layout.separator()
+        layout.operator("atool.clear_custom_normals", icon="MOD_NORMALEDIT")
+        layout.operator("atool.smooth_lowpoly", icon="MOD_SMOOTH")
+            
 
 class ATOOL_PT_panel(bpy.types.Panel):
     bl_idname = "ATOOL_PT_panel"
@@ -97,9 +114,11 @@ class ATOOL_PT_panel(bpy.types.Panel):
         browser_and_side_buttons.template_icon_view(wm, "at_asset_previews", show_labels=True, scale=6.0, scale_popup=5.0)
         
         side_buttons = browser_and_side_buttons.column(align=True)
-        side_buttons.operator("atool.open_asset_folder", text='', icon='FILE_FOLDER')
         side_buttons.operator("atool.pin_asset", text='', icon='PINNED')
         side_buttons.operator("atool.pin_active_asset", text='', icon='EYEDROPPER')
+        side_buttons.operator("atool.open_asset_folder", text='', icon='FILE_FOLDER')
+        side_buttons.operator("atool.open_blend", text='', icon='FILE_BLEND')
+        side_buttons.operator("atool.render_icon", text='', icon='RESTRICT_RENDER_OFF')
         side_buttons.menu('ATOOL_MT_actions', text='', icon='DOWNARROW_HLT')
 
         column.separator()
@@ -198,15 +217,61 @@ class ATOOL_PT_save_asset(bpy.types.Panel):
     bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
+        column = self.layout.column(align=False)  
+
+        self.asset_data = context.window_manager.at_asset_data # type: data.AssetData
+        if not self.asset_data.library:
+            column.label(text="No library folder specified.")
+            return
+
+        self.selected_objects = context.selected_objects
+        if not self.selected_objects:
+            column.label(text="No object selected.")
+            return
+
+        self.info = context.window_manager.at_template_info
         
-        column = self.layout.column(align=False)
-        template_info = context.window_manager.at_template_info
-        column.prop(template_info, "name", icon='SYNTAX_OFF', icon_only=True)
-        column.prop(template_info, "url", icon='URL', icon_only=True)
-        column.prop(template_info, "author", icon='USER', icon_only=True)
-        column.prop(template_info, "licence", icon='COPY_ID', icon_only=True)
-        column.prop(template_info, "tags", icon='FILTER', icon_only=True)
-        column.operator("atool.move_to_library")
+        column.label(text=f"ID: {self.id}")
+        column.label(text=f"Name: {self.id.replace('_', ' ')}")
+        column.label(text=f"Objects: {len(self.selected_objects)}")
+        column.prop(self.info, "do_move_images", text=f"Include images: {len(self.used_images)}")
+
+        column.prop(self.info, "name", icon='SYNTAX_OFF', icon_only=True)
+        column.prop(self.info, "tags", icon='FILTER', icon_only=True)
+        column.prop(self.info, "url", icon='URL', icon_only=True)
+        column.prop(self.info, "description", icon='TEXT', icon_only=True)
+
+        row = column.row(align=True)
+        row.prop(self.info, "author", icon='USER', text="")
+        row.prop(self.info, "author_url", icon='LINKED', text="")
+
+        row = column.row(align=True)
+        row.prop(self.info, "licence", icon='COPY_ID', text="")
+        row.prop(self.info, "licence_url", icon='LINKED', text="")
+
+        # column.prop(self.info, "do_move_sub_asset")
+        
+        column.operator("atool.move_to_library", text="Save")
+
+    @property
+    def id(self):
+        id = utils.get_slug(self.info.get("name", "")).strip('-_')
+        if not id:
+            id = utils.get_slug(utils.get_longest_substring([object.name for object in self.selected_objects])).strip('-_')
+        if not id:
+            id = "untitled_" + utils.get_time_stamp()
+        id = self.asset_data.ensure_unique_id(id)
+        return id
+
+    @property
+    def used_images(self):
+        all_images = []
+        for object in self.selected_objects:
+            if not object.data:
+                continue
+            for material in object.data.materials:
+                all_images.extend(bl_utils.get_all_images(material.node_tree))
+        return utils.deduplicate(all_images)
 
 
 class ATOOL_PT_view_3d_tools(bpy.types.Panel):
@@ -220,15 +285,23 @@ class ATOOL_PT_view_3d_tools(bpy.types.Panel):
     def draw(self, context):
 
         column = self.layout.column()
-        column.operator("atool.os_open")
-        column.operator("atool.reload_library")
-        column.operator("atool.split_blend_file")
-        column.operator("atool.distibute")
-        column.operator("atool.match_displacement")
+        subcolumn = column.column(align=True)
+        subcolumn.operator("atool.os_open")
+        subcolumn.operator("atool.reload_library")
+        subcolumn.operator("atool.find_missing")
+        subcolumn.operator("atool.split_blend_file")
+        column.separator()
+        subcolumn = column.column(align=True)
+        subcolumn.operator("atool.distibute")
+        subcolumn.operator("atool.match_displacement")
+        column.separator()
         column.operator("atool.dolly_zoom")
-        column.operator("atool.find_missing")
         column.operator("atool.unrotate")
-        
+        column.operator("atool.arrage_by_materials")
+        column.separator()
+        column.menu('ATOOL_MT_unreal')
+        column.separator()
+        column.operator("atool.render_partial")
 
 def update_ui():
     global current_browser_asset_id

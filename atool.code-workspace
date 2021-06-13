@@ -7,7 +7,12 @@
 	"settings": {
 		"languageTool.enabled": false,
 		"search.exclude":{
-			"site-packages": true
-		}
+			"site-packages": true,
+			"addon_updater.py": true,
+			"addon_updater_ops.py": true
+		},
+		"cSpell.words": [
+			"atool"
+		]
 	}
 }

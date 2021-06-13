@@ -1,11 +1,10 @@
 import itertools
 import json
 import math
+import operator as _operator
 import os
 import queue
 import sqlite3
-import subprocess
-import sys
 import threading
 import typing
 from collections import Counter
@@ -18,7 +17,7 @@ from mathutils.geometry import area_tri
 from . import image_utils
 from . import type_definer
 from . import view_3d_operator
-from . bl_utils import Node_Tree_Wrapper, Reference
+from . import bl_utils
 from . imohashxx import hashfile
 from . import utils
 from . import data
@@ -41,14 +40,21 @@ class Shader_Editor_Poll:
         return context.space_data.type == 'NODE_EDITOR' and context.space_data.tree_type == 'ShaderNodeTree'
 
 def backward_compatibility_get(object, attribute: str, old_attribute: str): # matapp backward compatibility
-    value = object.get(attribute) 
-    if value != None:
-        return value
-    value = object.get(old_attribute)
+    
+    attrs = (attribute, old_attribute)
+    for i, attr in enumerate(attrs):
+        value = object.get(attr) 
+        if value == None:
+            continue
+
+        if i != 0:
+            del object[attr]
+            object[attrs[0]] = value
+        break
+
     if value == None:
         return None
-    object[attribute] = value
-    del object[old_attribute]
+
     return value
 
 def is_atool_material(group):
@@ -294,7 +300,7 @@ def ensure_adaptive_subdivision(operator, context, object = None, material = Non
     node_tree = material.node_tree
     active_node = node_tree.nodes.active
 
-    node_tree = Node_Tree_Wrapper(node_tree)
+    node_tree = bl_utils.Node_Tree_Wrapper(node_tree)
     output = node_tree.output
     if not output:
         operator.report({'INFO'}, "No material output node found.")
@@ -311,7 +317,7 @@ def ensure_adaptive_subdivision(operator, context, object = None, material = Non
         return {'FINISHED'}
 
     if active_node:
-        active_node = node_tree.nodes[active_node.name]
+        active_node = node_tree[active_node.name]
         height = active_node.o.get("Height")
         if height:
             height.join(displacement.i["Height"], move=False)
@@ -663,19 +669,23 @@ class ATOOL_OT_append_extra_nodes(bpy.types.Operator, Shader_Editor_Poll):
 
         with bpy.data.libraries.load(filepath = templates_file_path) as (data_from, data_to):
             for node_group in data_from.node_groups:
+                
                 node_name = node_group[2:]
-                if node_group.startswith("++"):
-                    new_node_name = node_name
-                    if node_name in present_node_groups_names:
-                        if is_atool_extra_node(node_name):
-                            continue
-                        new_node_name = node_name + " AT"
-                    elif node_name + " AT" in present_node_groups_names:
-                        if is_atool_extra_node(node_name + " AT"):
-                            continue
-                        new_node_name = node_name + " ATOOL"
-                    to_import_names.append(new_node_name)
-                    to_import.append(node_group)
+                if not node_group.startswith("++"):
+                    continue
+
+                new_node_name = node_name
+                if node_name in present_node_groups_names:
+                    if is_atool_extra_node(node_name):
+                        continue
+                    new_node_name = node_name + " AT"
+                elif node_name + " AT" in present_node_groups_names:
+                    if is_atool_extra_node(node_name + " AT"):
+                        continue
+                    new_node_name = node_name + " ATOOL"
+                    
+                to_import_names.append(new_node_name)
+                to_import.append(node_group)
                     
             data_to.node_groups = to_import
 
@@ -906,8 +916,8 @@ def load_material_settings(operator, context, node_groups = None, node_trees = N
         operator.report({'ERROR'}, e)
         return {'CANCELLED'}
 
-    node_trees.extend(utils.deduplicate([group.node_tree for group in node_groups]))
-    node_trees = {node_tree: [group for group in node_groups if group.node_tree == node_tree] for node_tree in node_trees}
+    node_trees = {node_tree: [] for node_tree in node_trees}
+    node_trees.update(utils.list_by_key(node_groups, _operator.attrgetter('node_tree')))
         
     for node_tree, groups in node_trees.items():
 
@@ -942,8 +952,7 @@ def load_material_settings(operator, context, node_groups = None, node_trees = N
                 settings = json.loads(image_settings[3])
                 for name, value in settings.items():
                     if name not in material_settings.keys():
-                        material_settings[name] = []
-                        material_settings[name].append(value)
+                        material_settings[name] = [value]
                     else:     
                         material_settings[name].append(value)
 
@@ -1105,7 +1114,7 @@ def set_uv_scale_multiplier(operator, context, objects = [], node_trees = {}, tr
         if not groups:
             continue
 
-        node_tree = Node_Tree_Wrapper(node_tree)
+        node_tree = bl_utils.Node_Tree_Wrapper(node_tree)
 
         for group in groups:
             group = node_tree[group.name]
@@ -1780,11 +1789,11 @@ class ATOOL_OT_apply_material(bpy.types.Operator, ImportHelper, Material_Import_
 
         object = context.space_data.id_from
         if object:
-            self.object = Reference(object)
+            self.object = bl_utils.Reference(object)
 
         material = context.space_data.id
         if material:
-                self.material = Reference(material)
+                self.material = bl_utils.Reference(material)
 
         config = get_definer_config(context)
         
@@ -1800,40 +1809,42 @@ class ATOOL_OT_apply_material(bpy.types.Operator, ImportHelper, Material_Import_
         return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
-        if event.type == 'TIMER':
-            if not self.process.is_alive():
-                self.process.join()
 
-                try:
-                    result = self.queue.get(block=False)[0]
-                except:
-                    self.report({"ERROR"}, "The type definer failed. See the console for the error.")
-                    return {'CANCELLED'}
+        if event.type != 'TIMER' or self.process.is_alive():
+            return {'PASS_THROUGH'}
 
-                for report in result["report"]:
-                    self.report(*report)
+        self.process.join()
 
-                if not result["ok"]:
-                    return {'FINISHED'}
+        try:
+            result = self.queue.get(block=False)[0]
+        except:
+            self.report({"ERROR"}, "The type definer failed. See the console for the error.")
+            return {'CANCELLED'}
 
-                self.images = result["images"]
-                self.material_name = result["material_name"]
+        for report in result["report"]:
+            self.report(*report)
 
-                for image in self.images:
-                    image.data_block = bpy.data.images.load(filepath = image.path, check_existing=True)
-                    image.set_bl_props(image.data_block)
+        if not result["ok"]:
+            return {'FINISHED'}
 
-                object = None
-                material = None
+        self.images = result["images"]
+        self.material_name = result["material_name"]
 
-                if self.object:
-                    object = self.object.get()
-                if self.material:
-                    material = self.material.get()
+        for image in self.images:
+            image.data_block = bpy.data.images.load(filepath = image.path, check_existing=True)
+            image.set_bl_props(image.data_block)
 
-                return apply_material(self, context, object, material)
+        object = None
+        material = None
+
+        if self.object:
+            object = self.object.get()
+        if self.material:
+            material = self.material.get()
+
+        return apply_material(self, context, object, material)
                 
-        return {'PASS_THROUGH'}
+        
 
 
 class ATOOL_OT_convert_material(bpy.types.Operator, Shader_Editor_Poll):
@@ -1885,8 +1896,7 @@ class ATOOL_OT_convert_material(bpy.types.Operator, Shader_Editor_Poll):
         if not groups:
             return {'CANCELLED'}
 
-        node_trees = utils.deduplicate([group.node_tree for group in groups])
-        node_trees = {node_tree: [group for group in groups if group.node_tree == node_tree] for node_tree in node_trees}
+        node_trees = utils.list_by_key(groups, _operator.attrgetter('node_tree'))
 
         self.is_y_minus_normal_map = None
         
@@ -1991,7 +2001,7 @@ class ATOOL_OT_replace_material(bpy.types.Operator, Shader_Editor_Poll):
         if origin.node_tree != context.space_data.edit_tree:
             origin = context.space_data.edit_tree
 
-        self.targets = [Reference(group, origin) for group in groups]
+        self.targets = [bl_utils.Reference(group, origin) for group in groups]
 
         asset = view_3d_operator.get_current_browser_asset(self, context)
         if not asset:
@@ -2060,16 +2070,13 @@ class ATOOL_OT_replace_material(bpy.types.Operator, Shader_Editor_Poll):
             image.data_block = bpy.data.images.load(filepath = image.path, check_existing=True)
             image.set_bl_props(image.data_block)
 
-        types = {}
-        for group in groups:
+        def get_type(group):
             type = backward_compatibility_get(group.node_tree, "at_type", "ma_type")
             if not type:
                 type = 2
-            if type in types:
-                types[type].append(group)
-            else:
-                types[type] = [group]
-        types = types
+            return type
+
+        types = utils.list_by_key(groups, get_type)
         
         node_trees = utils.deduplicate([group.node_tree for group in groups])
 
@@ -2105,8 +2112,9 @@ class ATOOL_OT_replace_material(bpy.types.Operator, Shader_Editor_Poll):
                 for group in groups:
                     if not group:
                         continue
+                    self.report({'INFO'}, f"'{group.node_tree.name}' node tree of '{group.name}' group was replaced with '{node_tree.name}'")
                     group.node_tree = node_tree
-                    self.report({'INFO'}, f"{group.name}'s node tree was changed to {node_tree.name}")
+                    
 
                     if self.reset_settings:
                         for input_index in range(len(group.inputs)):
@@ -2149,7 +2157,7 @@ class ATOOL_OT_ungroup(bpy.types.Operator, Shader_Editor_Poll):
             return {'CANCELLED'}
 
         edit_tree = context.space_data.edit_tree
-        node_tree = Node_Tree_Wrapper(edit_tree)
+        node_tree = bl_utils.Node_Tree_Wrapper(edit_tree)
         added_nodes = []
         
         for group in groups:
@@ -2184,7 +2192,7 @@ class ATOOL_OT_ungroup(bpy.types.Operator, Shader_Editor_Poll):
                     bpy.data.node_groups.remove(group_tree)
 
         if self.do_change_inner:
-            node_tree = Node_Tree_Wrapper(context.space_data.edit_tree)
+            node_tree = bl_utils.Node_Tree_Wrapper(context.space_data.edit_tree)
             added_nodes = [node_tree[node.name] for node in added_nodes]
             for node in added_nodes:
                 output = node.outputs[0]
@@ -2253,7 +2261,7 @@ class ATOOL_OT_to_pbr(bpy.types.Operator, Shader_Editor_Poll):
             self.report({'INFO'}, "No active material.")
             return {'FINISHED'}
 
-        o = Node_Tree_Wrapper(node_tree).output
+        o = bl_utils.Node_Tree_Wrapper(node_tree).output
 
         surface = o["Surface"]
 

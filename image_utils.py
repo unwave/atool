@@ -112,7 +112,7 @@ class Image:
         else:
             image = cv.imread(self.path, cv.IMREAD_UNCHANGED | cv.IMREAD_ANYCOLOR | cv.IMREAD_ANYDEPTH)
 
-            if self.extension in (".exr"): # bad
+            if self.extension in (".exr",): # bad
                 for channel in reversed(cv.split(image)): # what if all channels?
                     if channel.any():
                         image = channel
@@ -400,3 +400,21 @@ def save_as_icon_from_clipboard(path):
         return None
     return save_as_icon(grab, path)
         
+def convert_unreal_image(path: str, format = 'png', bgr_to_rgb = False):
+    new_name = os.path.splitext(os.path.basename(path))[0] + "." + format
+    new_path = os.path.join(os.path.dirname(path), new_name)
+    if not os.path.exists(new_path):
+        with pillow_image.open(path) as tga:
+            
+            if bgr_to_rgb:
+                getbands_len = len(tga.getbands())
+                if getbands_len == 3:
+                    r, g, b = tga.split()
+                    tga = pillow_image.merge('RGB', (b, g, r))
+                elif getbands_len == 4:
+                    r, g, b, a = tga.split()
+                    tga = pillow_image.merge('RGBA', (b, g, r, a))
+
+            tga.save(new_path, format = format, compress_level=3)
+            # ? optimize=True
+    return new_path

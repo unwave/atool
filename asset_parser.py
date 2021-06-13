@@ -2,8 +2,10 @@ import re
 import os
 import json
 import subprocess
+from sys import prefix
 import tempfile
 import operator
+import typing
 from collections import Counter
 
 import logging
@@ -11,10 +13,12 @@ log = logging.getLogger("atool")
 
 try:
     from . import utils
-    from . type_definer import get_type
+    from . import type_definer
+    from . import bl_utils
 except:
     import utils
-    from type_definer import get_type
+    import type_definer
+    import bl_utils
 
 try:
     import bpy
@@ -45,15 +49,13 @@ def get_web_file(url, content_folder = None, content_path = None, headers = None
     assert not(content_folder == None and content_path == None)
     
     import requests
-    if headers:
-        response = requests.get(url, headers=headers)
-    else:
-        response = requests.get(url)
+    response = requests.get(url, headers=headers, stream=True)
     if response.status_code != 200:
         return False, response.text
 
     if content_path:
         os_path = content_path
+        file_name = os.path.basename(os_path)
         os.makedirs(os.path.dirname(os_path), exist_ok=True)
     else:
         file_name = response.url.split("?")[0].split("#")[0].split("/")[-1] # todo: check if does not have extension
@@ -61,23 +63,28 @@ def get_web_file(url, content_folder = None, content_path = None, headers = None
         os.makedirs(content_folder, exist_ok=True)
 
     assert not os.path.exists(os_path)
-    with open(os_path, 'wb') as file:
-        file.write(response.content)
+
+    total = int(response.headers.get('content-length'))
+    bl_utils.download_with_progress(response, os_path, total= total, indent=1, prefix = file_name)
+
     return True, os_path
 
 
-def get_web_cc0textures_info(url, content_folder):
+def get_web_ambientcg_info(url, content_folder):
 
-    if "cc0textures.com" in url: # https://cc0textures.com/view?id=Plaster003
+    # https://cc0textures.com/view?id=Plaster003
+    # https://ambientcg.com/view?id=Bricks056
+
+    if "cc0textures.com" in url or "ambientcg.com" in url: 
         match = re.search(r"(?<=id=)[a-zA-Z0-9]+", url)
         if not match:
-            return False, "Not valid CC0textures url."
+            return False, "Not valid Ambient CG url."
         id = match.group(0)
     elif "cc0.link" in url: # https://cc0.link/a/Plaster003
         url = url.split("?")[0].split("#")[0].rstrip("/")
         id = url.split("/")[-1]
 
-    api_url = f"https://cc0textures.com/api/v2/full_json?id={id}&sort=Latest&limit=1&include=tagData%2CdisplayData%2CdimensionsData%2CdownloadData%2CpreviewData%2CimageData"
+    api_url = f"https://ambientcg.com/api/v2/full_json?id={id}&sort=Latest&limit=1&include=tagData%2CdisplayData%2CdimensionsData%2CdownloadData%2CpreviewData%2CimageData"
 
     headers = {'User-Agent': 'Blender'}
 
@@ -90,20 +97,23 @@ def get_web_cc0textures_info(url, content_folder):
 
     asset = json["foundAssets"][0]
 
+    if asset["dataType"] == "3DModel":
+        return False, "3DModel is not supported yet."
+
     dimensions = {}
-    for letter, name in zip('xyz', ("dimensionX", "dimensionY" "dimensionZ")):
+    for letter, name in zip('xyz', ("dimensionX", "dimensionY", "dimensionZ")):
         dimension = asset.get(name)
         if dimension:
-            dimensions[letter] = dimension
+            dimensions[letter] = int(dimension)/100
             
     info = {
     "id": id,
     "name": asset["displayName"],
-    "url": f"https://cc0textures.com/view?id={id}",
-    "author": "cc0textures",
-    "author_url": "https://cc0textures.com",
+    "url": f"https://ambientcg.com/view?id={id}",
+    "author": "ambientcg",
+    "author_url": "https://ambientcg.com",
     "licence": "CC0",
-    "licence_url": "https://docs.cc0textures.com/licensing.html",
+    "licence_url": "https://help.ambientcg.com/01-General/Licensing.html",
     "tags": asset["tags"],
     "preview_url": asset["previewImage"]["1024-PNG"],
     "description": asset.get("description"),
@@ -119,9 +129,9 @@ def get_web_cc0textures_info(url, content_folder):
     utils.remove_empty(info)
     return True, info
 
-def get_web_cc0textures_asset(url, content_folder):
+def get_web_ambientcg_asset(url, content_folder):
 
-    is_ok, result = get_web_cc0textures_info(url, content_folder)
+    is_ok, result = get_web_ambientcg_info(url, content_folder)
     if not is_ok:
         return False, result
 
@@ -147,7 +157,6 @@ def get_web_cc0textures_asset(url, content_folder):
         print(f"Cannot download preview {url}", result)
 
     return True, info
-
 
 
 def get_web_3dmodelhaven_asset(url, content_folder):
@@ -228,7 +237,7 @@ def get_web_3dmodelhaven_asset(url, content_folder):
             textures.append(href)
 
     base = os.path.dirname(os.path.commonpath(textures))
-    for texture in textures:
+    for texture in bl_utils.iter_with_progress(textures, prefix = "Textures"):
         url = base_url + texture
         content_path = os.path.join(content_folder, os.path.relpath(texture, start=base))
         is_ok, result = get_web_file(url, content_path=content_path)
@@ -242,7 +251,6 @@ def get_web_3dmodelhaven_asset(url, content_folder):
         info["preview_path"] = result
     
     return True, info
-
 
 
 def get_web_texturehaven_info(url, content_folder):
@@ -281,9 +289,9 @@ def get_web_texturehaven_info(url, content_folder):
                 author_url = f"https://texturehaven.com/textures/?a={author}"
 
             elif title.startswith("Real-world"):
-                dimensions = title.split(":")[1].strip()
+                dimensions_title = title.split(":")[1].strip()
                 number_pattern = re.compile("\d+\.?\d*")
-                for letter, number in zip('xyz', number_pattern.findall(dimensions)):
+                for letter, number in zip('xyz', number_pattern.findall(dimensions_title)):
                     dimensions[letter] = float(number)
 
             elif title.startswith(("Categories", "Tags")):
@@ -325,7 +333,7 @@ def get_web_texturehaven_info(url, content_folder):
                 href = a["href"]
                 if "/4k/" in href:
                     name = href.split("/")[-1].lower()
-                    type = get_type(name, config={"is_rgb_plus_alpha": True})
+                    type = type_definer.get_type(name, config={"is_rgb_plus_alpha": True})
                     if not type or len(type) != 1:
                         continue
                     type = type[0]
@@ -343,7 +351,6 @@ def get_web_texturehaven_info(url, content_folder):
 
     return True, info
 
-
 def get_web_texturehaven_asset(url, content_folder):
 
     is_ok, result = get_web_texturehaven_info(url, content_folder)
@@ -353,7 +360,7 @@ def get_web_texturehaven_asset(url, content_folder):
     info = result
 
     downloads = info.pop("downloads")
-    for download in downloads:
+    for download in bl_utils.iter_with_progress(downloads, prefix = "Textures"):
         is_ok, result = get_web_file(download, content_folder)
         if not is_ok:
             print(f"Cannot download {download}", result)
@@ -870,19 +877,23 @@ INFO_SUPPORTED_SITES = {
     "blendswap.com": get_web_blendswap_info,
     "source.substance3d.com": get_web_substance_source_info,
     "quixel.com": get_web_megascan_info,
-    "cc0textures.com": get_web_cc0textures_info,
-    "cc0.link": get_web_cc0textures_info,
-    "texturehaven.com": get_web_texturehaven_info
+    "texturehaven.com": get_web_texturehaven_info,
+
+    "cc0textures.com": get_web_ambientcg_info,
+    "cc0.link": get_web_ambientcg_info,
+    "ambientcg.com": get_web_ambientcg_info,
 }
 
 ASSET_SUPPORTED_SITES = {
     "3dmodelhaven.com": get_web_3dmodelhaven_asset,
     "texturehaven.com": get_web_texturehaven_asset,
-    "cc0textures.com": get_web_cc0textures_asset,
-    "cc0.link": get_web_cc0textures_asset
+
+    "cc0textures.com": get_web_ambientcg_asset,
+    "ambientcg.com": get_web_ambientcg_asset,
+    "cc0.link": get_web_ambientcg_asset
 }
 
-def get_web(url: str, content_folder = None, as_asset = False) -> tuple:
+def get_web(url: str, content_folder = None, as_asset = False) -> typing.Tuple[bool, dict]:
     """
     `Parameters`: \n
         `url`: url to the asset on the internet \n

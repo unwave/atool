@@ -62,8 +62,8 @@ class ATOOL_PT_node_inspector(bpy.types.Panel):
             module = type(value).__module__
             if class_name == "bpy_func":
                 return
-            if module == "bpy.types":
-                return
+            # if module == "bpy.types":
+            #     return
             if class_name in ("Color", "Vector"):
                 value = tuple(value) 
             

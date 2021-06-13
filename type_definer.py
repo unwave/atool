@@ -4,22 +4,17 @@ import json
 import logging
 import os
 import re
-from difflib import SequenceMatcher
+import operator
 import typing
 
 log = logging.getLogger("atool")
 
 try:
     from . import image_utils
+    from . import utils
 except:
     import image_utils
-
-# import inspect
-# def possible_variants_debug_print(possible_variants):
-#     for variant in possible_variants:
-#         variant = [i for i in inspect.getmembers(variant) if not i[0].startswith('_') and not inspect.isroutine(i[1])]
-#         print(*variant, sep='\n')
-#         print()
+    import utils
 
 SINGLE_CHANNEL_MAPS = ["metallic", "roughness", "displacement", "ambient_occlusion", "bump", "opacity", "gloss", "specular"]
 TRIPLE_CHANNEL_MAPS = ["normal", "diffuse", "albedo", "emissive"]
@@ -35,9 +30,98 @@ except:
     CONVENTIONS = None
 
 
-def get_type(string, config = {}):
+class Match:
+    def __init__(self, string, reverse_dictionary):
+        self.string = string
+        self.string_length = len(string)
+        self.reverse_dictionary = reverse_dictionary
+        self.submatches = [] # type: typing.List[re.Match]
+        self._type_list = None
+        self.update()
 
-    string = string.lower()
+    def append(self, submatch):
+        self.submatches.append(submatch)
+        self.update()
+
+    def remove(self, index):
+        del self.submatches[index]
+        self.update()
+
+    def update(self):
+
+        self.is_separated = False
+        self.is_pre_separated = False
+        self.is_post_separated = False
+        self.is_RGB_bitmap = False
+        self.are_submatches_separated = False
+
+        if not self.submatches:
+            return
+
+        if self.type_list[0] in TRIPLE_CHANNEL_MAPS:
+            self.is_RGB_bitmap = True
+
+        if len(self.submatches) == 1:
+            self.are_submatches_separated = True
+        else:
+            self.are_submatches_separated = True
+            for i in range(len(self.submatches) - 1):
+                if not self.submatches[i].end() < self.submatches[i + 1].start():
+                    self.are_submatches_separated = False
+
+        first_char_index = self.submatches[0].start()
+        if first_char_index != 0:
+            if SEPARATOR_PATTERN.match(self.string, pos=first_char_index - 1):
+                self.is_pre_separated = True
+        elif first_char_index == 0:
+            self.is_pre_separated = True
+
+        last_char_index = self.submatches[-1].end()
+        if last_char_index != self.string_length:
+            if SEPARATOR_PATTERN.match(self.string, pos=last_char_index):
+                self.is_post_separated = True
+        elif last_char_index == self.string_length:
+            self.is_post_separated = True
+            
+        if self.is_pre_separated and self.is_post_separated:
+            self.is_separated = True
+
+    @property
+    def type_list(self) -> typing.List[str]:
+        if self._type_list != None:
+            return  self._type_list
+        return [self.reverse_dictionary[submatch_str] for submatch_str in self.submatch_list]
+
+    @type_list.setter
+    def type_list(self, value):
+        self._type_list = value
+
+    @property
+    def submatch_list(self) -> typing.List[str]:
+        return [submatch.group(0) for submatch in self.submatches]
+
+    @property
+    def match_string(self):
+        return ''.join(self.submatch_list)
+
+    @property
+    def length(self):
+        return self.submatches[-1].end() - self.submatches[0].start()
+
+    @property
+    def is_one_letter_match(self):
+        flag = True
+
+        if self.length >= 3:
+            flag = False
+        else:
+            for submatch in self.submatches:
+                if len(submatch.group(0)) > 1:
+                    flag = False
+        return flag
+
+
+def get_type(string: str, config = {}):
 
     if not CONVENTIONS:
         raise Exception("Cannot read file bitmap_type_name_conventions.json.")
@@ -52,6 +136,8 @@ def get_type(string, config = {}):
     reverse_dictionary = {name: type for type, names in patterns.items() for name in names}
     patterns = {type: re.compile('|'.join(sorted(names, reverse=True, key=len))) for type, names in patterns.items()}
 
+
+    string = string.lower()
     string_length = len(string)
 
     def match_length(match):
@@ -59,7 +145,7 @@ def get_type(string, config = {}):
         return end - start
 
     def get_submatch(starting_index, types_to_avoid):
-        submatches = []
+        submatches = [] # type: typing.List[re.Match]
         for type, pattern in patterns.items():
             if type in types_to_avoid:
                 continue
@@ -69,94 +155,25 @@ def get_type(string, config = {}):
         
         return max(submatches, key=match_length) if submatches else None
 
-    class Match:
-        def __init__(self, string):
-            self.submatches = []
-            self.string = string
-            self.string_length = len(string)
-            self.update()
-
-        def append(self, submatch):
-            self.submatches.append(submatch)
-            self.update()
-
-        def remove(self, index):
-            del self.submatches[index]
-            self.update()
-
-        def update(self):
-
-            self.is_separated = False
-            self.is_pre_separated = False
-            self.is_post_separated = False
-            self.is_RGB_bitmap = False
-            self.are_submatches_separated = False
-            self.bitmap_types = []
-
-            if not self.submatches:
-                return
-
-            self.bitmap_types = [self.submatch_to_bitmap_type(submatch) for submatch in self.submatches]
-
-            if self.bitmap_types[0] in TRIPLE_CHANNEL_MAPS:
-                self.is_RGB_bitmap = True
-
-            if len(self.submatches) == 1:
-                self.are_submatches_separated = True
-            else:
-                self.are_submatches_separated = True
-                for i in range(len(self.submatches) - 1):
-                    if not self.submatches[i].span()[1] < self.submatches[i + 1].span()[0]:
-                        self.are_submatches_separated = False
-
-            first_char_index = self.submatches[0].span()[0]
-            if first_char_index != 0:
-                if SEPARATOR_PATTERN.match(self.string, pos=first_char_index - 1):
-                    self.is_pre_separated = True
-            elif first_char_index == 0:
-                self.is_pre_separated = True
-
-            last_char_index = self.submatches[-1].span()[1]
-            if last_char_index != self.string_length:
-                if SEPARATOR_PATTERN.match(self.string, pos=last_char_index):
-                    self.is_post_separated = True
-            elif last_char_index == self.string_length:
-                self.is_post_separated = True
-                
-            if self.is_pre_separated and self.is_post_separated:
-                self.is_separated = True
-
-        def submatch_to_bitmap_type(self, match):
-            start, end = match.span()
-            return  reverse_dictionary[self.string[start:end]]
-
-        def get_submatch_list(self):
-            return [self.string[submatch.span()[0]:submatch.span()[1]] for submatch in self.submatches]
-
-        def get_length(self):
-            return self.submatches[-1].span()[1] - self.submatches[0].span()[0]
-
-
     def define_bitmap_type(starting_index):
 
-        match = Match(string)
+        match = Match(string, reverse_dictionary)
 
         for i in range(4):
 
+            to_avoid = match.type_list
             if match.is_RGB_bitmap:
-                to_avoid = match.bitmap_types + TRIPLE_CHANNEL_MAPS
-            else:
-                to_avoid = match.bitmap_types
+                to_avoid += TRIPLE_CHANNEL_MAPS
 
             separator = SEPARATOR_PATTERN.match(string, pos=starting_index)
             if separator:
-                starting_index = separator.span()[1]
+                starting_index = separator.end()
 
             submatch = get_submatch(starting_index, to_avoid)
             if submatch == None:
                 break
             match.append(submatch)
-            starting_index = submatch.span()[1]
+            starting_index = submatch.end()
 
             if not match.is_separated and match.are_submatches_separated:
                 match.remove(-1)
@@ -168,67 +185,44 @@ def get_type(string, config = {}):
 
         return match if match.submatches else None
 
-    possible_variants = []
+    matches = [] # type: typing.List[Match]
     point = 0
     while point <= string_length:
-        results = define_bitmap_type(point)
-        if results == None:
+        result = define_bitmap_type(point)
+        if result == None:
             point += 1
         else:
-            point = results.submatches[-1].span()[1]
-            possible_variants += [results]
+            point = result.submatches[-1].end()
+            matches.append(result)
 
-    if not possible_variants:
+    if not matches:
         return None
 
-    def submatch_to_string(submatch):
-        return  string[submatch.span()[0]:submatch.span()[1]]
+    for match in matches:
+        type_list = match.type_list
 
-    def get_match_length(match):
-        return match.get_length()
-
-    # def is_one_letter_match_list(match):
-    #     flag = False
-
-    #     if len(''.join(match)) >= 3:
-    #         flag = True
-    #     else:
-    #         for submatch in match:
-    #             if len(submatch) > 1:
-    #                 flag = True
-    #     return flag
+        if len(type_list) == 1 and match.match_string == 'ddna':
+            match.type_list = ['normal', 'gloss']
         
-    def is_one_letter_match(match):
-        flag = True
-
-        if match.get_length() >= 3:
-            flag = False
-        else:
-            for submatch in match.submatches:
-                if len(submatch_to_string(submatch)) > 1:
-                    flag = False
-        return flag
+        if len(type_list) == 2 and type_list[0] in ('diffuse', 'albedo') and type_list[1] == 'metallic' and match.submatch_list[1].lower() == 'm':
+            match.type_list = [type_list[0], 'opacity']
 
     if not config.get("is_rgb_plus_alpha"):
-        for variant in possible_variants:
-            if len(variant.submatches) == 2:
-                variant.remove(0)
-        
-    separated_matches_only = [match for match in possible_variants if match.is_separated]
-    if separated_matches_only != []:
-        result = separated_matches_only[-1].get_submatch_list()
-        result = [reverse_dictionary[i] for i in result]
-    else:
-        not_one_letter_matches = [match for match in possible_variants if not is_one_letter_match(match)]
-        if not_one_letter_matches != []:
-            result = not_one_letter_matches[-1].get_submatch_list()
-            result = [reverse_dictionary[i] for i in result]
-        else:
-            possible_variants.reverse()
-            result = max(possible_variants, key=get_match_length)
-            result = result.get_submatch_list()
-            result = [reverse_dictionary[i] for i in result]
-    return result
+        for match in matches:
+            if len(match.submatches) == 2:
+                match.remove(0)
+
+    variants = [match for match in matches if match.is_separated]
+    if variants:
+        return variants[-1].type_list
+
+    variants = [match for match in matches if not match.is_one_letter_match]
+    if variants:
+        return variants[-1].type_list
+
+    matches.reverse()
+    match = max(matches, key=operator.attrgetter('length'))
+    return match.type_list
 
 
 def define(paths, config: dict):
@@ -249,7 +243,7 @@ def define(paths, config: dict):
         result["report"] = report = []
         queue = config.get("queue")
         images: typing.List[image_utils.Image]
-        images = [image_utils.Image(path.lower()) for path in paths]
+        images = [image_utils.Image(path) for path in paths]
 
 
         extensions = set(CONVENTIONS["bitmap"]["extension"]).difference(set(config["ignore_format"]))
@@ -327,18 +321,7 @@ def define(paths, config: dict):
                 for image in images:
                     image.process(db = db, no_height = no_height)
 
-
-        material_name = ""
-        if len(images) == 1:
-            material_name = images[0].name.rstrip("_-")
-        else:
-            first = images[0].name
-            second = images[1].name
-            match = SequenceMatcher(None, first, second).find_longest_match(0, len(first), 0, len(second))
-            if match:
-                material_name = first[match.a:match.a + match.size].rstrip("_-")
-        result["material_name"] = material_name
-
+        result["material_name"] = utils.get_longest_substring([image.name for image in images]).strip(" ").rstrip(" _-")
 
         result["ok"] = True
         if queue:

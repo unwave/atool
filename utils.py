@@ -12,6 +12,7 @@ import tempfile
 import subprocess
 import threading
 import sys
+from datetime import datetime
 
 try:
     from . import asset_parser
@@ -21,7 +22,10 @@ except:
 IMAGE_EXTENSIONS = { ".bmp", ".jpeg", ".jpg", ".jp2", ".j2c", ".tga", ".cin", ".dpx", ".exr", ".hdr", ".sgi", ".rgb", ".bw", ".png", ".tiff", ".tif", ".psd", ".dds"}
 GEOMETRY_EXTENSIONS = {}
 URL_EXTENSIONS = (".url", ".desktop", ".webloc")
-META_TYPES = {"__info__", "__icon__", "__gallery__", "__extra__", "__archive__"}
+META_FOLDERS = {'__gallery__', '__extra__', '__archive__'}
+META_TYPES = {"__info__", "__icon__"} | META_FOLDERS
+
+DIR_PATH = os.path.dirname(os.path.realpath(__file__))
 
 class PseudoDirEntry:
     def __init__(self, path):
@@ -72,39 +76,40 @@ def is_meta(self):
 @property
 @functools.lru_cache()
 def file_type(self):
-    if self.is_file():
-        if self.name == "__info__.json":
-            return "__info__"
-        elif self.name == "__icon__.png":
-            return "__icon__"
-        elif self.name == "BLENDSWAP_LICENSE.txt":
-            return "blendswap_info"
-        elif self.name.lower().endswith("license.html"):
-            with self.open(encoding="utf-8") as info_file:
-                if re.search(r"blendswap.com\/blends\/view\/\d+", info_file.read()):
-                    return "blendswap_info"
-        elif self.suffix == ".sbsar":
-            return "sbsar"
-        elif self.suffix == ".zip":
-            return "zip"
-        elif self.suffix == ".json":
-            with self.open(encoding="utf-8") as json_file:
-                json_data = json.load(json_file)
-                if type(json_data.get("id")) == str and type(json_data.get("meta")) == list and type(json_data.get("points")) == int:
-                    return "megascan_info"
-        elif self.suffix in IMAGE_EXTENSIONS:
-            return "image"
-        elif self.suffix in GEOMETRY_EXTENSIONS:
-            return "geometry"
-        elif self.suffix in URL_EXTENSIONS:
-            return "url"
-    else:
-        if self.name == "__gallery__":
-            return "__gallery__"
-        elif self.name == "__extra__":
-            return "__extra__"
-        elif self.name == "__archive__":
-            return "__archive__"  
+    name = self.name
+
+    if not self.is_file():
+        if name in META_FOLDERS:
+            return name
+        return None
+    
+    if name == "__info__.json":
+        return "__info__"
+    elif name == "__icon__.png":
+        return "__icon__"
+    elif name == "BLENDSWAP_LICENSE.txt":
+        return "blendswap_info"
+    elif name.lower().endswith("license.html"):
+        with self.open(encoding="utf-8") as info_file:
+            if re.search(r"blendswap.com\/blends\/view\/\d+", info_file.read()):
+                return "blendswap_info"
+
+    suffix = self.suffix
+    if suffix == ".sbsar":
+        return "sbsar"
+    elif suffix == ".zip":
+        return "zip"
+    elif suffix == ".json":
+        with self.open(encoding="utf-8") as json_file:
+            json_data = json.load(json_file)
+            if type(json_data.get("id")) == str and type(json_data.get("meta")) == list and type(json_data.get("points")) == int:
+                return "megascan_info"
+    elif suffix in IMAGE_EXTENSIONS:
+        return "image"
+    elif suffix in GEOMETRY_EXTENSIONS:
+        return "geometry"
+    elif suffix in URL_EXTENSIONS:
+        return "url"
 
     return None
 
@@ -121,6 +126,14 @@ class File_Filter(typing.Dict[str, pathlib.Path] , dict):
         for item in os.scandir(path.path):
             if item.name not in ignore:
                 self[item.name] = pathlib.Path(item.path)
+
+    @classmethod
+    def from_files(cls, files: typing.Iterable[str]):
+        filter = cls()
+        for file in files:
+            name = os.path.basename(file)
+            filter[name] = pathlib.Path(file)
+        return filter
 
     def update(self):
 
@@ -155,7 +168,7 @@ class File_Filter(typing.Dict[str, pathlib.Path] , dict):
         return [item for item in self.values() if item.suffix in extension]
 
 
-def move_to_folder(file: typing.Union[str, os.DirEntry], folder:str, create=True):
+def move_to_folder(file: typing.Union[str, os.DirEntry], folder:str, create = True, exists_rename = True):
     
     if isinstance(file, str):
         old_path = file
@@ -170,27 +183,47 @@ def move_to_folder(file: typing.Union[str, os.DirEntry], folder:str, create=True
         raise TypeError(f"The function move_to_folder does not support {str(file)} of type {type(file)}.")
 
     if old_path != new_path:
+
         if create:
             os.makedirs(folder, exist_ok=True)
+
+        if exists_rename:
+            name, suffix = os.path.splitext(os.path.basename(new_path))
+            index = 2
+            while os.path.exists(new_path):
+                new_path = os.path.join(folder, name + f'_{index}' + suffix)
+                index += 1
+
         shutil.move(old_path, new_path)
 
     return new_path
 
 
 def read_local_file(name, auto=True) -> typing.Union[str, dict]:
-    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), name)
+    path = os.path.join(DIR_PATH, name)
+    
     if not os.path.exists(path):
         return None
+
     try:
         with open(path, 'r', encoding="utf-8") as file:
-            if not auto:
-                return(file.read())
-            elif path.lower().endswith(".json"):
-                return(json.load(file))
+            if auto:
+                if path.lower().endswith(".json"):
+                    return(json.load(file))
+            return file.read()
     except:
         import traceback
         traceback.print_exc()
         return None
+
+def get_script(name, read = False):
+    path = os.path.join(DIR_PATH, 'scripts', name)
+
+    if not read:
+        return path
+
+    with open(path, 'r', encoding="utf-8") as file:
+        return file.read()
 
 def get_files(path, get_folders = False, recursivly = True):
     list = []
@@ -203,6 +236,7 @@ def get_files(path, get_folders = False, recursivly = True):
             if recursivly:
                 list.extend(get_files(item.path, get_folders, recursivly))
     return list
+
 
 def deduplicate(list_to_deduplicate: list):
         return list(dict.fromkeys(list_to_deduplicate))
@@ -408,7 +442,6 @@ def find(names):
 
     return paths
 
-
 def get_closest_path(lost_path, string_paths):
 
     lost_path = lost_path.lower().split(os.sep)[:-1]
@@ -451,18 +484,15 @@ def os_open(operator, path):
             import traceback
             traceback.print_exc()
 
-
-def os_show(operator, files):
-
-    files = [file.lower() for file in files]
-
-    directories = [os.path.dirname(image_path) for image_path in files]
-    directories = {directory: [file for file in files if file.startswith(directory)] for directory in directories}
+def os_show(operator, files: typing.Iterable[str]):
 
     if PLATFORM != 'win32':
-        for directory in directories:
+        for directory in deduplicate([os.path.dirname(file) for file in files]):
             os_open(operator, directory)
         return
+
+    files = [file.lower() for file in files]
+    directories = list_by_key(files, os.path.dirname)
 
     import ctypes
     import ctypes.wintypes
@@ -489,7 +519,6 @@ def os_show(operator, files):
             
     ctypes.windll.ole32.CoUninitialize()
 
-
 def web_open(string , is_url = False):
 
     starts_with_http = string.startswith("https://") or string.startswith("http://")
@@ -507,3 +536,60 @@ def web_open(string , is_url = False):
     
     import webbrowser
     webbrowser.open(url, new=2, autoraise=True)
+
+
+def list_by_key(items, key_func):
+    dict = {}
+    for item in items:
+        key = key_func(item)
+        list = dict.get(key)
+        if list:
+            list.append(item)
+        else:
+            dict[key] = [item]
+    return dict
+
+
+def get_time_stamp():
+    return datetime.now().strftime('%y%m%d_%H%M%S')
+
+
+def get_longest_substring(strings):
+
+    if len(strings) == 1:
+        return  strings[0]
+
+    sets = []
+    for string in strings:
+        string_set = []
+        string_len = len(string)
+        for i in range(string_len):
+            for j in range(i + 1, string_len + 1):
+                string_set.append(string[i:j])
+        sets.append(set(string_set))
+
+    mega_set = set().union(*sets)
+
+    for string_set in sets:
+        mega_set.intersection_update(string_set)
+
+    if not mega_set:
+        return ""
+
+    return max(mega_set, key=len)
+
+
+def get_slug(string):
+    string = re.sub("[\\\\\/:*?\"<>|]", "", string)
+    string = string.strip(" ")
+    string = re.sub(" +", "_", string)
+    return string
+    
+
+def get_desktop():
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as key:
+            return winreg.QueryValueEx(key, "Desktop")[0]
+    except:
+        return os.path.expanduser("~/Desktop")
