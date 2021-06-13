@@ -736,11 +736,12 @@ def get_material(textures: typing.List[str], name = 'New Material', use_displace
                 input_alpha.join(output, move = not is_moved)
 
     image_nodes = [node for node in node_tree.node_tree.nodes if node.type == 'TEX_IMAGE']
-    x_locations = [node.location[0] for node in image_nodes]
-    min_x_location = min(x_locations)
-    for node in image_nodes:
-        x, y = node.location
-        node.location = (min_x_location, y)
+    if image_nodes:
+        x_locations = [node.location[0] for node in image_nodes]
+        min_x_location = min(x_locations)
+        for node in image_nodes:
+            x, y = node.location
+            node.location = (min_x_location, y)
 
     return material
 
@@ -760,7 +761,7 @@ def arrage_by_materials(objects: typing.Iterable[bpy.types.Object], by_materials
 
     def append(object):
         
-        materials = object.data.materials
+        materials = [material for material in object.data.materials if material]
         if not materials:
             sets['empty'].append(object)
             return
