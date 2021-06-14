@@ -1733,7 +1733,7 @@ class ATOOL_OT_render_partial(bpy.types.Operator, Object_Mode_Poll):
             '-render_path', desktop
         ]
 
-        threading.Thread(target=bl_utils.run_blender, kwargs={'filepath': bpy.data.filepath, 'script': script, 'argv': argv, 'use_atool': False}, daemon=True).start()
+        threading.Thread(target=bl_utils.run_blender, kwargs={'filepath': bpy.data.filepath, 'script': script, 'argv': argv, 'use_atool': False, 'stdout': None}, daemon=True).start()
 
         return {'FINISHED'}
 

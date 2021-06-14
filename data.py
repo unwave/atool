@@ -33,8 +33,10 @@ except: # for external testing
     import bl_utils
     import image_utils
     import type_definer
-    import view_3d_ui
-    import shader_editor_operator
+
+    # till i find a better way
+    # import view_3d_ui
+    # import shader_editor_operator
 
 EMPTY_ITEM_LIST = [('/', "Empty :(", '＾-＾', 'GHOST_DISABLED', 0)]
 
@@ -1180,10 +1182,11 @@ class AssetData(typing.Dict[str, Asset], dict):
         return False
 
     def move_asset_to_desktop(self, id, context):
-        asset_folder = self[id].path
-        del self[id]
 
+        asset_folder = self[id].path
         utils.move_to_folder(asset_folder, utils.get_desktop())
+        
+        del self[id]
 
         update_search(context.window_manager, context)
         view_3d_ui.update_ui()
