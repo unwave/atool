@@ -928,8 +928,6 @@ class Progress_Drawer:
 
             self.string = f'{prefix}: {int(index/total * 100)}% | {index*show_mult}/{total*show_mult} | Past: {past_min}:{past_sec:02d} Remain: {remain_min}:{remain_sec:02d} Total: {total_min}:{total_sec:02d}'
 
-        # self.string = ''.join(( prefix, str(index), '/', str(total), ' | Past: ', str(past_min), ':', str(past_sec), ' Remain: ', str(remain_min), ':', str(remain_sec) ))
-
     def __init__(self, iterator: typing.Iterable, total: int = None, prefix = '', indent = 0, is_file = False):
         self.iterator = iterator
         self.total = total
@@ -946,41 +944,32 @@ class Progress_Drawer:
     def __exit__(self, exc_type, exc_val, exc_tb):
         bpy.types.SpaceView3D.draw_handler_remove(self.handler, 'WINDOW')
 
-def get_regions() -> typing.List[bpy.types.Region]:
-    if bpy.app.background:
-        return None
-    
-    regions = []
+def update_view_3d_regions():
     for window in bpy.context.window_manager.windows:
         for area in window.screen.areas: 
             if area.type == 'VIEW_3D':
                 for region in area.regions:
                     if region.type == 'WINDOW':
-                        regions.append(region)
-    return regions
+                        region.tag_redraw()
 
 def iter_with_progress(iterator: typing.Iterable, indent = 0, prefix = '', total: int = None):
-    regions = get_regions()
 
-    if not regions:
+    if bpy.app.background:
         for i in iterator:
             yield i
         return
 
     with Progress_Drawer(iterator, prefix = prefix, total = total, indent = indent) as drawer:
         for i in drawer:
-            for region in regions:
-                region.tag_redraw()
+            update_view_3d_regions()
             yield i
-        for region in regions:
-            region.tag_redraw()
+        update_view_3d_regions()
         
 CHUNK_SIZE = 4096
 
 def download_with_progress(response, path: str, total: int, region: bpy.types.Region = None, indent = 0, prefix = ''):
-    regions = get_regions()
 
-    if not regions or not total:
+    if bpy.app.background or not total:
         with open(path, "wb") as f:
             for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
                 f.write(chunk)
@@ -991,8 +980,6 @@ def download_with_progress(response, path: str, total: int, region: bpy.types.Re
     with Progress_Drawer(range(total_cunks), is_file = True, prefix = prefix, total = total_cunks, indent = indent) as drawer:
         with open(path, "wb") as f:
             for i, chunk in zip(drawer, response.iter_content(chunk_size=4096)):
-                for region in regions:
-                    region.tag_redraw()
+                update_view_3d_regions()
                 f.write(chunk)
-            for region in regions:
-                region.tag_redraw()
+            update_view_3d_regions()
