@@ -364,7 +364,7 @@ class Asset:
         else:
             id_path = utils.PseudoDirEntry(utils.move_to_folder(path.path, asset_data_path))
 
-        files = utils.File_Filter(id_path, ignore = ("__extra__", "__archive__"))
+        files = utils.File_Filter.from_dir(id_path, ignore = ("__extra__", "__archive__"))
 
         old_info = None
         for existing_info in files.get_by_type("__info__"):

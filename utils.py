@@ -118,14 +118,22 @@ pathlib.Path.is_meta = is_meta
 pathlib.Path.data = data
 
 class File_Filter(typing.Dict[str, pathlib.Path] , dict):
-    def __init__(self, path: os.DirEntry, ignore: typing.Union[str, typing.Iterable[str]]):
-        self.path = path.path
-        ignore = {ignore} if isinstance(ignore, str) else set(ignore)
-        self.ignore = ignore
+    def __init__(self):
+        self.ignore = set()
+        self.path = None
 
+    @classmethod
+    def from_dir(cls, path: os.DirEntry, ignore: typing.Union[str, typing.Iterable[str]] = None):
+        filter = cls()
+        if ignore:
+            filter.ignore = ignore = {ignore} if isinstance(ignore, str) else set(ignore)
+
+        filter.path = path.path
         for item in os.scandir(path.path):
             if item.name not in ignore:
-                self[item.name] = pathlib.Path(item.path)
+                filter[item.name] = pathlib.Path(item.path)
+        
+        return filter
 
     @classmethod
     def from_files(cls, files: typing.Iterable[str]):
@@ -136,6 +144,8 @@ class File_Filter(typing.Dict[str, pathlib.Path] , dict):
         return filter
 
     def update(self):
+        if not self.path:
+            return
 
         for name in list(self.keys()):
             if not self[name].exists():

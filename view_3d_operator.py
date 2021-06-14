@@ -1682,7 +1682,6 @@ class ATOOL_OT_import_files(bpy.types.Operator, Image_Import_Properties, Object_
         layout = self.layout
         self.draw_images_import(layout)
         layout.separator()
-        layout.prop(self, "files")
         shader_editor_operator.draw_import_config(context, layout)
 
     def execute(self, context):
