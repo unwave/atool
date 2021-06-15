@@ -729,7 +729,7 @@ class AssetData(typing.Dict[str, Asset], dict):
             if folder.is_dir():
                 self[folder.name] = Asset.default(folder)
 
-        if not bpy.app.background or not context:
+        if not bpy.app.background and context:
             wm = context.window_manager
             wm.at_search = wm.at_search
 
@@ -739,7 +739,7 @@ class AssetData(typing.Dict[str, Asset], dict):
                 id, asset = Asset.auto(file, self.library)
                 self[id] = asset
 
-        if not bpy.app.background or not context:
+        if not bpy.app.background and context:
             wm = context.window_manager
             wm.at_search = wm.at_search
 

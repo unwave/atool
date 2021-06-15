@@ -1110,7 +1110,7 @@ class ATOOL_OT_process_auto(bpy.types.Operator, Object_Mode_Poll):
             self.report({'INFO'}, f"The auto import folder is not specified.")
             return {'CANCELLED'}
 
-        threading.Thread(target=asset_data.update_auto).start()
+        threading.Thread(target=asset_data.update_auto, args=(context,)).start()
         self.report({'INFO'}, f"The auto import started.")
 
         return {'FINISHED'}
