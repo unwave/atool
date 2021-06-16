@@ -939,18 +939,23 @@ class Progress_Drawer:
     
     def __enter__(self):
         self.handler = bpy.types.SpaceView3D.draw_handler_add(self.draw_callback, tuple(), 'WINDOW', 'POST_PIXEL')
+        self.next = 1/24
+        bpy.app.timers.register(self.update_view_3d_regions, persistent = True)
         return self
         
     def __exit__(self, exc_type, exc_val, exc_tb):
+        self.next = None
         bpy.types.SpaceView3D.draw_handler_remove(self.handler, 'WINDOW')
 
-def update_view_3d_regions():
-    for window in bpy.context.window_manager.windows:
-        for area in window.screen.areas: 
-            if area.type == 'VIEW_3D':
-                for region in area.regions:
-                    if region.type == 'WINDOW':
-                        region.tag_redraw()
+    def update_view_3d_regions(self):
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'VIEW_3D':
+                    for region in area.regions:
+                        if region.type == 'WINDOW':
+                            region.tag_redraw()
+        return self.next
+
 
 def iter_with_progress(iterator: typing.Iterable, indent = 0, prefix = '', total: int = None):
 
@@ -961,9 +966,7 @@ def iter_with_progress(iterator: typing.Iterable, indent = 0, prefix = '', total
 
     with Progress_Drawer(iterator, prefix = prefix, total = total, indent = indent) as drawer:
         for i in drawer:
-            update_view_3d_regions()
             yield i
-        update_view_3d_regions()
         
 CHUNK_SIZE = 4096
 
@@ -980,6 +983,4 @@ def download_with_progress(response, path: str, total: int, region: bpy.types.Re
     with Progress_Drawer(range(total_cunks), is_file = True, prefix = prefix, total = total_cunks, indent = indent) as drawer:
         with open(path, "wb") as f:
             for i, chunk in zip(drawer, response.iter_content(chunk_size=4096)):
-                update_view_3d_regions()
                 f.write(chunk)
-            update_view_3d_regions()
