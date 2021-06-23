@@ -267,7 +267,7 @@ class ATOOL_PT_save_asset(bpy.types.Panel):
     def used_images(self):
         all_images = []
         for object in self.selected_objects:
-            if not object.data:
+            if not (object.data and hasattr(object.data, 'materials')):
                 continue
             for material in object.data.materials:
                 all_images.extend(bl_utils.get_all_images(material.node_tree))

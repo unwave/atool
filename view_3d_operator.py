@@ -8,6 +8,7 @@ import threading
 import typing
 import operator
 import json
+import sys
 from datetime import datetime
 
 import bpy
@@ -1700,11 +1701,10 @@ class ATOOL_OT_import_files(bpy.types.Operator, Image_Import_Properties, Object_
         return {'FINISHED'}
 
 
-
 class ATOOL_OT_render_partial(bpy.types.Operator, Object_Mode_Poll):
     bl_idname = "atool.render_partial"
-    bl_label = "Render Partial"
-    bl_description = "Render image in parts"
+    bl_label = "Render Partial Via CMD"
+    bl_description = "Render image in parts from the command line with .bat file"
 
     dicing: bpy.props.IntProperty(default=2)
 
@@ -1725,18 +1725,31 @@ class ATOOL_OT_render_partial(bpy.types.Operator, Object_Mode_Poll):
 
     def execute(self, context):
 
-        script = utils.get_script('render_partial.py')
-        desktop = utils.get_desktop()
+        def escape(string):
+            if ' ' in string:
+                string = f'"{string}"'
+            return string
 
-        argv = [
-            '-dicing', str(self.dicing),
-            '-render_path', desktop
-        ]
+        if bpy.app.version < (2,91,0):
+            python_binary = bpy.app.binary_path_python
+        else:
+            python_binary = sys.executable
 
-        threading.Thread(target=bl_utils.run_blender, kwargs={'filepath': bpy.data.filepath, 'script': script, 'argv': argv, 'use_atool': False, 'stdout': None}, daemon=True).start()
+        python_binary = escape(python_binary)
+        blender_binary = escape(bpy.app.binary_path)
+
+        script = escape(utils.get_script('render_worker.py'))
+
+        blend_path = escape(bpy.data.filepath)
+
+        bat_file_path = os.path.join(os.path.dirname(bpy.data.filepath) , 'partial_render.bat')
+
+        with open(bat_file_path, 'w',encoding='utf-8') as bat_file:
+            bat_file.write(f'{python_binary} {script} -blender {blender_binary} -file {blend_path} -dicing {self.dicing}')
+
+        self.report({'INFO'}, "Bat file created.")
 
         return {'FINISHED'}
-
 
 
 def work(region, indent):

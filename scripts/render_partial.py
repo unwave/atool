@@ -2,16 +2,16 @@ import bpy
 import os
 import sys
 import argparse
+import json
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-dicing', type=int)
-parser.add_argument('-render_path')
+parser.add_argument('-path')
 
 args = sys.argv[sys.argv.index('--') + 1:]
 args = parser.parse_args(args)
 
-import site
-sys.path.insert(0, site.getusersitepackages())
+print(args)
 
 camera = bpy.context.scene.camera.data
 render = bpy.context.scene.render
@@ -69,32 +69,15 @@ while x <= shift_lim_x:
         print('--------------------------')
         bpy.ops.render.render()
         image = bpy.data.images['Render Result']
-        path = os.path.join(bpy.app.tempdir, f"{y}_{x}.png")
+        path = os.path.join(args.path, f"{y}_{x}.png")
         rows.append(path)
         image.save_render(path)
         
         index += 1
         y += shift_step_y
         
-    columns.append(reversed(rows))
+    columns.append(list(reversed(rows)))
     x += shift_step_x  
 
-import cv2 as cv
-import numpy
-
-def get_image(path):
-    return cv.imread(path, cv.IMREAD_UNCHANGED | cv.IMREAD_ANYCOLOR | cv.IMREAD_ANYDEPTH)
-
-render_columns = []
-
-for image_paths in columns:
-    images = [get_image(path) for path in  image_paths]
-    render_columns.append(numpy.concatenate(images, axis=0))
-
-render = numpy.concatenate(render_columns, axis=1)
-
-from datetime import datetime
-
-ext ='.png'
-render_path = os.path.join(args.render_path, f"render_{datetime.now().strftime('%y%m%d_%H%M%S')}{ext}")
-cv.imwrite(render_path, render)
+with open(os.path.join(args.path, 'done.json'), 'w', encoding='utf-8') as json_file:
+    json.dump(columns, json_file, indent = 4, ensure_ascii = False)
