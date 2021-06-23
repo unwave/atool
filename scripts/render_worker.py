@@ -25,7 +25,7 @@ parser.add_argument('-file')
 
 args = parser.parse_args(sys.argv[1:])
 
-script = os.path.join(DIR_PATH, 'render_partial_2.py')
+script = os.path.join(DIR_PATH, 'render_partial.py')
 
 args = [args.blender, '-b', '--factory-startup', args.file, '--python', script, '--', '-dicing', args.dicing]
 
