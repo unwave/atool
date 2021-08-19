@@ -99,6 +99,8 @@ def register():
     for c in classes:
         bpy.utils.register_class(c)
 
+    bpy.types.MESH_MT_vertex_group_context_menu.append(vertex_group_menu)
+
     addon_preferences = bpy.context.preferences.addons[__package__].preferences
     wm = bpy.types.WindowManager
     wm.at_asset_data = AssetData(addon_preferences.library_path, addon_preferences.auto_path)
@@ -139,6 +141,8 @@ def unregister():
     for c in classes:
         bpy.utils.unregister_class(c)
 
+    bpy.types.VIEW3D_MT_add.remove(vertex_group_menu)
+
     wm = bpy.types.WindowManager
     del wm.at_asset_data
     del wm.at_asset_previews
@@ -149,6 +153,7 @@ def unregister():
     del wm.at_assets_per_page
 
     del bpy.types.Object.at_uv_multiplier
+    
 
 init_time = timer() - start
 log.info(f"__init__ time:\t {init_time:.2f} sec")

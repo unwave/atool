@@ -162,7 +162,7 @@ def get_export_task(filename, object, options = None):
 def get_textures(material):
     type = material.__class__.__name__
     
-    if type == 'StaticMaterial':
+    if type in ('StaticMaterial', 'SkeletalMaterial'):
         material = material.material_interface
         type = material.__class__.__name__
         
@@ -241,7 +241,10 @@ class Materials(dict):
     def append_from_mesh(self, mesh):
         slot_to_material = {}
 
-        for material in mesh.static_materials:
+        type = mesh.__class__.__name__
+        materials = mesh.static_materials if type == 'StaticMesh' else mesh.materials # 'SkeletalMesh'
+
+        for material in materials:
             material = material.material_interface
 
             textures = {self.textures.append(texture) for texture in get_textures(material)}
@@ -301,7 +304,7 @@ def export(assets, dir_path):
 
         type = asset.__class__.__name__
     
-        if type == 'StaticMesh':
+        if type in ('StaticMesh', 'SkeletalMesh'):
             meshes.append(asset)
 
         elif type in ('Material', 'MaterialInstanceConstant'):

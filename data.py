@@ -636,8 +636,7 @@ class Asset:
 
     @property
     def blend(self):
-        blends = [file.path for file in os.scandir(self.path) if file.path.endswith(".blend")]
-        return blends[0] if blends else None
+        return utils.get_last_file(self.path, ".blend")
 
     def get_web_info(self, context):
         with self.lock:

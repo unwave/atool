@@ -1,12 +1,9 @@
 import subprocess
-
 import os
 import sys
 import argparse
 import tempfile
 import json
-
-from numpy.lib.function_base import delete
 
 DIR_PATH = os.path.dirname(__file__)
 

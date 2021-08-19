@@ -290,6 +290,11 @@ def extract_zip(file: typing.Union[str, typing.IO[bytes]], path = None, extract 
                     extracted_files.append(os.path.join(to_path, name.replace("/", os.sep)))
     return extracted_files
 
+def get_last_file(path: str, type: typing.Union[str, typing.Tuple[str]]) -> str:
+    files = [file for file in get_files(path) if file.name.lower().endswith(type)]
+    if not files:
+        return None
+    return max(files, key=lambda x: (os.path.getmtime(x), os.path.getctime(x), x)).path
 
 class Item_Location:
     def __init__(self, path, iter):

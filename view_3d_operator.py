@@ -311,7 +311,7 @@ class Blend_Import:
         for collection in data_to.collections:
 
             if self.ignore and collection.name.startswith(self.ignore):
-                for object in collection.all_objects:
+                for object in list(collection.all_objects):
                     bpy.data.objects.remove(object)
                     objects.remove(object)
                 bpy.data.collections.remove(collection)
@@ -1710,7 +1710,7 @@ class ATOOL_OT_render_partial(bpy.types.Operator, Object_Mode_Poll):
 
     def invoke(self, context, event):
 
-        if not bpy.context.scene.camera:
+        if not context.scene.camera:
             self.report({'INFO'}, "Set a camera.")
             return {'CANCELLED'}
 
@@ -1787,3 +1787,95 @@ class ATOOL_OT_test_draw(bpy.types.Operator, Object_Mode_Poll):
         threading.Thread(target=work, args=(context.region, 0), daemon=True).start()
 
         return {'FINISHED'}
+
+
+class ATOOL_OT_add_camera_visibility_vertex_group(bpy.types.Operator):
+    bl_idname = "atool.add_camera_visibility_vertex_group"
+    bl_label = "Camera Visibility Vertex Group"
+    bl_description = "Add a camera visibility vertex group"
+
+    def execute(self, context):
+
+        camera_object = context.scene.camera
+        if not camera_object:
+            self.report({'INFO'}, "Set a camera.")
+            return {'CANCELLED'}
+
+        camera_data = camera_object.data
+
+        object = context.object
+        if object.type != 'MESH' or not object.data:
+            self.report({'INFO'}, f"Select a mesh object.")
+            return {'CANCELLED'}
+
+        # camera_object = None
+        # for object in bpy.data.objects:
+        #     print(object.data)
+
+        #     if object.type != 'CAMERA':
+        #         continue
+
+        #     if object.data == camera_data:
+        #         camera_object = object
+        #         break
+
+        # if not camera_object:
+        #     self.report({'INFO'}, "Add a camera to scene.")
+        #     return {'CANCELLED'}
+
+        camera_translation, camera_rotation, camera_scale = camera_object.matrix_world.decompose()
+
+        vectors = [mathutils.Vector(vector) for vector in camera_data.view_frame(scene = context.scene)]
+        camera_plane_normals = [camera_rotation @ vectors[index].cross(vectors[index + 1]) for index in range(-2, 2)]
+
+        object_matrix_world = object.matrix_world
+
+        all_ver_indexes = range(len(object.data.vertices))
+
+        vertex_group = object.vertex_groups.get('camera_visibility')
+        if not vertex_group:
+            vertex_group = object.vertex_groups.new(name='camera_visibility')
+        vertex_group.add(all_ver_indexes, 1, 'REPLACE')
+
+        depsgraph = context.evaluated_depsgraph_get()
+        object = object.evaluated_get(depsgraph)
+        #mesh = object.to_mesh(preserve_all_data_layers = True, depsgraph = depsgraph)
+        mesh = object.data
+
+        hit_vertices = []
+        for vertex in mesh.vertices:
+
+            origin = object_matrix_world.inverted() @ camera_translation
+            target = vertex.co
+            direction = target - origin
+            
+            if any(normal.dot(object_matrix_world @ target - camera_translation) < 0 for normal in camera_plane_normals):
+                continue
+            
+            result, location, normal, index = object.ray_cast(origin, direction)
+            
+            if result and (location - target).length <= 0.0001:
+                hit_vertices.append(vertex.index)
+                
+        vert_to_poly = {index: [] for index in all_ver_indexes}
+        for p in mesh.polygons:
+            for v in p.vertices:
+                vert_to_poly[v].append(p)
+        
+        final_vert_indexes = []
+        for hit_vert in hit_vertices:
+            for poly in vert_to_poly[hit_vert]:
+                final_vert_indexes.extend(poly.vertices)
+
+        vertex_group.add(all_ver_indexes, 0, 'REPLACE')
+        vertex_group.add(final_vert_indexes, 1, 'REPLACE')
+
+        return {'FINISHED'}
+
+
+def vertex_group_menu(self, context):
+    layout = self.layout # type: bpy.types.UILayout
+
+    column = layout.column(align=True)
+    column.separator()
+    column.operator("atool.add_camera_visibility_vertex_group")

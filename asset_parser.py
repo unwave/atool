@@ -119,6 +119,8 @@ def get_web_ambientcg_info(url, content_folder):
     "description": asset.get("description"),
     "dimensions": dimensions
     }
+    
+    info['material_settings'] = {'Y- Normal Map': 1}
 
     if content_folder:
         download = utils.locate_item(asset["downloadFolders"], ("attribute", "4K-JPG"), return_as = "parent")[0]
