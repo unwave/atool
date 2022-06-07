@@ -2,7 +2,6 @@ import re
 import os
 import json
 import subprocess
-from sys import prefix
 import tempfile
 import operator
 import typing
@@ -11,19 +10,30 @@ from collections import Counter
 import logging
 log = logging.getLogger("atool")
 
-try:
-    from . import utils
-    from . import type_definer
-    from . import bl_utils
-except:
-    import utils
-    import type_definer
-    import bl_utils
 
-try:
+if __package__:
     import bpy
-except:
-    pass
+    from . import utils
+    from . import bl_utils
+    # from . import type_definer
+else:
+    import utils
+    # import bl_utils
+    # import type_definer
+    
+    # class bl_utils:
+
+    #     def iter_with_progress(iterator, *args, **kw):
+    #         for i in iterator:
+    #             yield i
+
+    #     def download_with_progress(response, path, *args, **kw):
+    #         with open(path, "wb") as f:
+    #             for chunk in response.iter_content(chunk_size=4096):
+    #                 f.write(chunk)
+    
+    # bl_utils = bl_utils()
+
 
 # import requests
 # from bs4 import BeautifulSoup
@@ -44,6 +54,8 @@ finally:
         print("7z is not found. The sbsar info auto import is unavailable.")
         seven_z = None
 
+def get_base_url(url):
+    return url.split("?")[0].split("#")[0].rstrip("/")
 
 def get_web_file(url, content_folder = None, content_path = None, headers = None):
     assert not(content_folder == None and content_path == None)
@@ -161,154 +173,64 @@ def get_web_ambientcg_asset(url, content_folder):
     return True, info
 
 
-def get_web_3dmodelhaven_asset(url, content_folder):
+def get_web_polyhaven_info(url, content_folder):
+    # https://polyhaven.com/a/aerial_rocks_02
+    url = get_base_url(url)
 
-    # https://3dmodelhaven.com/model/?m=sofa_02
-
-    if not re.search(r"3dmodelhaven.com\/model\/", url):
-        return False, "Not valid 3d Model Haven url."
-
-    import requests
-    response = requests.get(url)
-    if response.status_code != 200:
-        return False, response.text
-
-    from bs4 import BeautifulSoup
-    soup = BeautifulSoup(response.text, 'html.parser')
-
-    meta = soup.findAll(name="meta")
-    for item in meta:
-        key = item.attrs.get("name")
-        if key == "tex1:tags": # <meta name="tex1:tags" content="outdoor industrial,barrel,water,plastic" />
-            tags = re.split(",| ", item["content"])
-        elif key == "tex1:name": # <meta name="tex1:name" content="Barrel 02" />
-            name = item["content"]
-        elif key == "author": # <meta name="author" content="Jorge Camacho">
-            author = item["content"]
-        elif key == "tex1:preview-image": # <meta name="tex1:preview-image" content="https://3dmodelhaven.com/files/mod_images/renders/Barrel_02.jpg" />
-            preview_url = item["content"]
-        elif key == "author": # <meta name="author" content="Jorge Camacho">
-            author = item["content"]
-
-    id = re.search(r"(?<=m=)[^&#]+", url).group(0)
-
-    info = {
-        "id": id,
-        "name": name,
-        "url": url,
-        "author": author,
-        "author_url": fr"https://3dmodelhaven.com/models/?a={author}",
-        "licence": "CC-0",
-        "licence_url": r"https://3dmodelhaven.com/p/license.php",
-        "tags": tags,
-        "preview_url": preview_url,
-        # "description": "",
-        # "dimensions": [],
-    }
-
-    files = soup.find_all(name="a", href=re.compile("\/files\/"))
-    base_url = r"https://3dmodelhaven.com"
-
-
-    models = []
-    for file in files:
-        href = file["href"]
-        if href.endswith(".blend"):
-            models.append(href)
-
-    for model in models:
-        url = base_url + model
-        is_ok, result = get_web_file(url, content_folder)
-        if not is_ok:
-            print(f"Cannot download {url}", result)
-            return False, result
-        else:
-            blend = result
-    
-    script = "import bpy, json\n" \
-    "print(json.dumps([bpy.path.abspath(image.filepath) for image in bpy.data.images if image.source == 'FILE']))"
-
-    result = subprocess.run([bpy.app.binary_path, blend, "--factory-startup", "-b", "--python-expr", script], stdout=subprocess.PIPE, text=True)
-    paths = json.loads(result.stdout.split("\n")[0])
-    names = tuple([os.path.basename(path) for path in paths])
-
-    textures = []
-    for file in files:
-        href = file["href"]
-        if href.endswith(names):
-            textures.append(href)
-
-    base = os.path.dirname(os.path.commonpath(textures))
-    for texture in bl_utils.iter_with_progress(textures, prefix = "Textures"):
-        url = base_url + texture
-        content_path = os.path.join(content_folder, os.path.relpath(texture, start=base))
-        is_ok, result = get_web_file(url, content_path=content_path)
-        if not is_ok:
-            print(f"Cannot download {url}", result)
-
-    is_ok, result = get_web_file(preview_url, content_folder)
-    if not is_ok:
-        print(f"Cannot download {preview_url}", result)
-    else:
-        info["preview_path"] = result
-    
-    return True, info
-
-
-def get_web_texturehaven_info(url, content_folder):
-    # https://texturehaven.com/tex/?t=brick_wall_003
-    url = url.split("#")[0]
-
-    if not "texturehaven.com/tex/" in url:
-        return False, "Not valid Texture Haven url."
+    if not "polyhaven.com/a/" in url:
+        return False, "Not valid Poly Haven url."
         
-    match = re.search(r"(?<=t=)[a-zA-Z0-9_]+", url)
-    id = match.group(0)
+    # aerial_rocks_02
+    id = url.split('/')[-1]
+
+    api_url = f"https://api.polyhaven.com/info/{id}"
 
     import requests
-    response = requests.get(url)
+    response = requests.get(api_url)
     if response.status_code != 200:
         return False, response.text
 
-    from bs4 import BeautifulSoup
-    soup = BeautifulSoup(response.text, 'html.parser')
+    data = response.json() # type: dict
+
+    type_to_text = {
+        0: 'hdri',
+        1: 'material',
+        2: 'model',
+    }
+    type = type_to_text[data['type']]
+    
+    if type == 'hdri':
+        raise NotImplementedError('HDRIs are not supported yet.')
+
+    authors = data.get('authors', {})
+    authors_list = list(authors)
+    authors = ', '.join(authors_list)
+    author_url = f"https://polyhaven.com/textures?a={authors_list[0]}" 
+
+    if type == 'material':
+        preview_url = f"https://cdn.polyhaven.com/asset_img/thumbs/{id}.png?height=780"
+    elif type == 'model':
+        preview_url = f"https://cdn.polyhaven.com/asset_img/primary/{id}.png?height=780"
+
+    tags = data.get('tags', [])
+    tags.extend(data.get('categories', []))
 
     dimensions = {}
-    tags = []
-
-    for item in soup.find(name="div", id = "item-info").findAll("li"):
-        title = item.get("title")
-
-        if not title:
-            b = item.find('b')
-            if b:
-                title = b.string
-
-        if title:
-            
-            if title.startswith("Author"):
-                author = title.split(":")[1].strip()
-                author_url = f"https://texturehaven.com/textures/?a={author}"
-
-            elif title.startswith("Real-world"):
-                dimensions_title = title.split(":")[1].strip()
-                number_pattern = re.compile("\d+\.?\d*")
-                for letter, number in zip('xyz', number_pattern.findall(dimensions_title)):
-                    dimensions[letter] = float(number)
-
-            elif title.startswith(("Categories", "Tags")):
-                tags.extend([a.string.lower().strip() for a in item.findAll("a")])
-
-    preview_url = "https://texturehaven.com" + soup.find(name = "div", id = "item-preview").find("img")["src"]
+    if type == 'material':
+        dimensions_text = data.get('scale')
+        if dimensions_text:
+            number_pattern = re.compile("\d+\.?\d*")
+            for letter, number in zip('xyz', number_pattern.findall(dimensions_text)):
+                dimensions[letter] = float(number)
 
     info = {
         "id": id,
-        "name": id,
+        "name": data.get('name', id),
         "url": url,
-        "author": author,
+        "author": authors,
         "author_url": author_url,
         "licence": "CC0",
-        "licence_url": "https://texturehaven.com/p/license.php",
+        "licence_url": "https://polyhaven.com/license",
         "tags": tags,
         "preview_url": preview_url,
         # "description": "",
@@ -316,54 +238,64 @@ def get_web_texturehaven_info(url, content_folder):
     }
 
     utils.remove_empty(info)
-
+    
+    api_url = f"https://api.polyhaven.com/files/{id}"
+    response = requests.get(api_url)
+    if response.status_code == 200:
+        
+        data = response.json() 
+        blend = data['blend']['4k']['blend']
+        include = blend['include'] # type: dict
+        
+        if type == 'material':
+            with tempfile.TemporaryDirectory() as temp_dir:
+                is_ok, result = get_web_file(blend['url'], temp_dir)
+                if is_ok:
+                    process = bl_utils.run_blender(result, script=utils.get_script('get_polyhaven_dimensions.py'), stdout=subprocess.PIPE)
+                    info['dimensions'] = json.loads(process.stdout.split("\n")[0])
+                else:
+                    print(f"Cannot get the blend file: {blend['url']}")
+                    print(response.text)
+    else:
+        if content_folder:
+            return False, response.text
+        else:
+            print(f"Cannot get the files info: {api_url}")
+            print(response.text)
 
     if content_folder:
         downloads = []
 
-        # for a in soup.findAll("a"):
-        #     if a.get("download"):
-        #         href = a["href"]
-        #         if "/png/4k/" in href:
-        #             name = href.split("/")[-1].lower()
-        #             type = get_type(name)
-        #             if type and len(type) == 1 and type[0] in ('diffuse', 'albedo', 'displacement', 'normal', 'roughness', 'ambient_occlusion'):
-        #                 downloads.append("https://texturehaven.com" + href)
+        if type == 'material':
+            for rel_path, texture in include.items():
+                downloads.append({'url': texture['url']})
+                
+        elif type == 'model':
+            downloads.append({'url': blend['url']})
+            for rel_path, texture in include.items():
+                downloads.append({
+                    'rel_path': rel_path,
+                    'url': texture['url']
+                })
 
-        for a in soup.findAll("a"):
-            if a.get("download"):
-                href = a["href"]
-                if "/4k/" in href:
-                    name = href.split("/")[-1].lower()
-                    type = type_definer.get_type(name, config={"is_rgb_plus_alpha": True})
-                    if not type or len(type) != 1:
-                        continue
-                    type = type[0]
-                    if ("/jpg/4k/" in href and type in ('diffuse', 'albedo', 'normal', 'roughness', 'ambient_occlusion')) or ("/png/4k/" in href and type in ('displacement',)):
-                        downloads.append("https://texturehaven.com" + href)
-
-        for download in downloads.copy():
-            if "dx_normal" in download.lower():
-                for _download in downloads.copy():
-                    if "gl_normal" in _download.lower():
-                        downloads.remove(download)
-
-        downloads = utils.deduplicate(downloads)
         info["downloads"] = downloads
-
+        
     return True, info
 
-def get_web_texturehaven_asset(url, content_folder):
+def get_web_polyhaven_asset(url, content_folder):
 
-    is_ok, result = get_web_texturehaven_info(url, content_folder)
+    is_ok, info = get_web_polyhaven_info(url, content_folder)
     if not is_ok:
-        return False, result
+        return False, info
 
-    info = result
-
-    downloads = info.pop("downloads")
-    for download in bl_utils.iter_with_progress(downloads, prefix = "Textures"):
-        is_ok, result = get_web_file(download, content_folder)
+    downloads = info.pop('downloads') # type: typing.List[dict]
+    for download in bl_utils.iter_with_progress(downloads, prefix = "Files"):
+        rel_path = download.get('rel_path')
+        if rel_path:
+            content_path = os.path.join(content_folder, *os.path.split(rel_path))
+            is_ok, result = get_web_file(download['url'], content_path = content_path)
+        else:
+            is_ok, result = get_web_file(download['url'], content_folder)
         if not is_ok:
             print(f"Cannot download {download}", result)
 
@@ -533,7 +465,7 @@ def get_web_substance_source_info_by_label(label):
             "sortDir": "desc",
             "sort": "bySearchScore",
             "search": "\"" + label + "\"",
-            "filters": {"status": ["published"]},
+            #"filters": {"status": ["published"]},
         },
         "query": query_assets
     }
@@ -550,10 +482,10 @@ def get_web_substance_source_info_by_label(label):
 
     info = get_info_from_substance_json(items[0])
 
-    if info["name"] == label: # name == title form substance source json
+    if label in info["name"]: # name == title form substance source json
         return info
     else:
-        print(info["title"], "!=" ,label)
+        print(items[0]["title"], "!=" ,label)
         return None
 
 def get_web_substance_source_info(url, content_folder):
@@ -878,8 +810,10 @@ INFO_SUPPORTED_SITES = {
     "sketchfab.com": get_web_sketchfab_info,
     "blendswap.com": get_web_blendswap_info,
     "source.substance3d.com": get_web_substance_source_info,
+    "substance3d.adobe.com": get_web_substance_source_info,
     "quixel.com": get_web_megascan_info,
-    "texturehaven.com": get_web_texturehaven_info,
+
+    "polyhaven.com": get_web_polyhaven_info,
 
     "cc0textures.com": get_web_ambientcg_info,
     "cc0.link": get_web_ambientcg_info,
@@ -887,8 +821,7 @@ INFO_SUPPORTED_SITES = {
 }
 
 ASSET_SUPPORTED_SITES = {
-    "3dmodelhaven.com": get_web_3dmodelhaven_asset,
-    "texturehaven.com": get_web_texturehaven_asset,
+    "polyhaven.com": get_web_polyhaven_asset,
 
     "cc0textures.com": get_web_ambientcg_asset,
     "ambientcg.com": get_web_ambientcg_asset,

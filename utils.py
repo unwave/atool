@@ -10,17 +10,17 @@ import re
 import operator
 import tempfile
 import subprocess
-import threading
 import sys
 from datetime import datetime
+from timeit import default_timer
 
-try:
+if __package__:
     from . import asset_parser
-except:
+else:
     import asset_parser
 
 IMAGE_EXTENSIONS = { ".bmp", ".jpeg", ".jpg", ".jp2", ".j2c", ".tga", ".cin", ".dpx", ".exr", ".hdr", ".sgi", ".rgb", ".bw", ".png", ".tiff", ".tif", ".psd", ".dds"}
-GEOMETRY_EXTENSIONS = {}
+GEOMETRY_EXTENSIONS = {".obj", ".fbx"}
 URL_EXTENSIONS = (".url", ".desktop", ".webloc")
 META_FOLDERS = {'__gallery__', '__extra__', '__archive__'}
 META_TYPES = {"__info__", "__icon__"} | META_FOLDERS
@@ -235,7 +235,7 @@ def get_script(name, read = False):
     with open(path, 'r', encoding="utf-8") as file:
         return file.read()
 
-def get_files(path, get_folders = False, recursivly = True):
+def get_files(path, get_folders = False, recursively = True):
     list = []
     for item in os.scandir(path):
         if item.is_file():
@@ -243,8 +243,8 @@ def get_files(path, get_folders = False, recursivly = True):
         else:
             if get_folders:
                 list.append(item)
-            if recursivly:
-                list.extend(get_files(item.path, get_folders, recursivly))
+            if recursively:
+                list.extend(get_files(item.path, get_folders, recursively))
     return list
 
 
@@ -290,8 +290,8 @@ def extract_zip(file: typing.Union[str, typing.IO[bytes]], path = None, extract 
                     extracted_files.append(os.path.join(to_path, name.replace("/", os.sep)))
     return extracted_files
 
-def get_last_file(path: str, type: typing.Union[str, typing.Tuple[str]]) -> str:
-    files = [file for file in get_files(path) if file.name.lower().endswith(type)]
+def get_last_file(path: str, type: typing.Union[str, typing.Tuple[str]], recursively = True) -> str:
+    files = [file for file in get_files(path, recursively) if file.name.lower().endswith(type)]
     if not files:
         return None
     return max(files, key=lambda x: (os.path.getmtime(x), os.path.getctime(x), x)).path
@@ -564,24 +564,52 @@ def list_by_key(items, key_func):
             dict[key] = [item]
     return dict
 
+def map_to_list(mapping: dict, key, value: typing.Union[list, dict, typing.Any]):
+
+    if not value:
+        return
+
+    if type(value) == dict:
+        for key, value in value.items():
+            map_to_list(mapping, key, value)
+        return
+
+    if mapping.get(key):
+        if type(value) == list:
+            mapping[key].extend(value)
+        else:
+            mapping[key].append(value)
+    else:
+        if type(value) == list:
+            mapping[key] = value.copy()
+        else:
+            mapping[key] = [value]
 
 def get_time_stamp():
     return datetime.now().strftime('%y%m%d_%H%M%S')
 
 
-def get_longest_substring(strings):
+def get_longest_substring(strings: typing.Iterable[str], from_beginning = False):
 
     if len(strings) == 1:
-        return  strings[0]
+        return  list(strings)[0]
 
     sets = []
-    for string in strings:
-        string_set = []
-        string_len = len(string)
-        for i in range(string_len):
-            for j in range(i + 1, string_len + 1):
-                string_set.append(string[i:j])
-        sets.append(set(string_set))
+    if from_beginning:
+        for string in strings:
+            string_set = []
+            string_len = len(string)
+            for i in range(string_len):
+                string_set.append(string[:i + 1])
+            sets.append(set(string_set))
+    else:
+        for string in strings:
+            string_set = []
+            string_len = len(string)
+            for i in range(string_len):
+                for j in range(i + 1, string_len + 1):
+                    string_set.append(string[i:j])
+            sets.append(set(string_set))
 
     mega_set = set().union(*sets)
 
@@ -608,3 +636,163 @@ def get_desktop():
             return winreg.QueryValueEx(key, "Desktop")[0]
     except:
         return os.path.expanduser("~/Desktop")
+
+def ensure_unique_path(path):
+
+    if not os.path.exists(path):
+        return path
+
+    dir = os.path.dirname(path)
+    stem, ext = os.path.splitext(os.path.basename((path)))
+    number = 2
+
+    new_path = os.path.join(dir, stem + f"_{number}" + ext)
+    while os.path.exists(new_path):
+        number += 1
+        new_path = os.path.join(dir, stem + f"_{number}" + ext)
+    
+    return new_path
+
+def get_path_list(path: str):
+    fragmented_path = path.split(os.sep)
+    path_list = []
+    for i in range(len(fragmented_path)):
+        path_list.append(os.sep.join(fragmented_path[:i + 1]))
+    path_list.sort(key = len)
+    return path_list
+
+def get_path_set(path: str):
+    fragmented_path = path.split(os.sep)
+    path_set = set()
+    for i in range(len(fragmented_path)):
+        path_set.add(os.sep.join(fragmented_path[:i + 1]))
+    return path_set
+
+def synchronized(func):
+    def wrapper(*args, **kw):
+        with args[0].lock: # self.lock
+            return func(*args, **kw)
+    return wrapper
+
+import binascii
+import xxhash   
+
+SAMPLE_THRESHOLD = 256 * 1024
+SAMPLE_SIZE = 32 * 1024
+
+def encode_leb128(n):
+    """ https://en.wikipedia.org/wiki/LEB128 """
+    result = []
+    while n >= 128:
+        result.append(n & 127 | 128)
+        n >>= 7
+    result.append(n)
+    return bytes(result)
+
+def get_file_hash(path):
+    with open(path, 'rb') as f:
+        
+        size = os.fstat(f.fileno()).st_size
+
+        if size < SAMPLE_THRESHOLD:
+            data = f.read()
+        else:
+            data = f.read(SAMPLE_SIZE)
+            
+            f.seek(size//2)
+            data += f.read(SAMPLE_SIZE)
+            
+            f.seek(-SAMPLE_SIZE, os.SEEK_END)
+            data += f.read(SAMPLE_SIZE)
+
+        digest = xxhash.xxh3_128_digest(data)
+
+        # left for backward compatibility with imohash from https://pypi.org/project/imohash/ by kalafut using xxhash
+        digest = digest[7::-1] + digest[16:7:-1]
+        
+        leb128_encoded_size = encode_leb128(size)
+        digest = leb128_encoded_size + digest[len(leb128_encoded_size):]
+        
+        return binascii.hexlify(digest).decode()
+
+
+def print_json(object):
+    print(json.dumps(object, indent=4, default=lambda x: x.__repr__()))
+    
+import inflection
+
+PLURALS_SUB = [(re.compile(rule), replacement) for rule, replacement in inflection.PLURALS]
+UNCOUNTABLES_PLURALIZE = inflection.UNCOUNTABLES
+
+cache_pluralize = {}
+
+def pluralize(word: str) -> str:
+    result = cache_pluralize.get(word)
+    if result:
+        return result
+    
+    if word in UNCOUNTABLES_PLURALIZE:
+        cache_pluralize[word] = word
+        return word
+        
+    for rule, replacement in PLURALS_SUB:
+        result = rule.sub(replacement, word)
+        if word != result:
+            cache_pluralize[word] = result
+            return result
+        
+    cache_pluralize[word] = word
+    return word
+
+UNCOUNTABLES_SINGULARIZE = [re.compile(r'(?i)\b(%s)\Z' % inflection) for inflection in inflection.UNCOUNTABLES]
+SINGULARS_SUB = [(re.compile(rule), replacement) for rule, replacement in inflection.SINGULARS]
+
+cache_singularize = {}
+
+def singularize(word: str) -> str:
+    result = cache_singularize.get(word)
+    if result:
+        return result
+    
+    for inflection in UNCOUNTABLES_SINGULARIZE:
+        if inflection.search(word):
+            cache_singularize[word] = word
+            return word
+
+    for rule, replacement in SINGULARS_SUB:
+        result = rule.sub(replacement, word)
+        if word != result:
+            cache_singularize[word] = result
+            return result
+        
+    cache_singularize[word] = word
+    return word
+
+SUB_1 = re.compile(r"([A-Z]+)([A-Z][a-z])")
+SUB_2 = re.compile(r"([a-z\d])([A-Z])")
+TAGS = re.compile('[^\W_]+')
+
+def split(word: str):
+    word = SUB_1.sub(r'\1 \2', word)
+    word = SUB_2.sub(r'\1 \2', word)
+    return TAGS.findall(word)
+
+def get_most_common(items: typing.Iterable):
+    dictionary = {}
+    for item in items:
+        dictionary[item] = dictionary.get(item, 0) + 1
+    return sorted(dictionary.items(), key = operator.itemgetter(1), reverse = True)[0][0]
+
+def timeit(func):
+
+    @functools.wraps(func)
+    def timed_func(*args, **kw):
+    
+        start = default_timer()
+        result = func(*args, **kw)
+        end = default_timer()
+        
+        print(f"{func.__name__} took {end - start}")
+        return result
+
+    return timed_func

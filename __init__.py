@@ -29,13 +29,10 @@ import typing
 import sys
 import os
 import threading
-import time
 
 import bpy
-from bpy.app.handlers import persistent
 
 from . import addon_updater_ops
-
 
 def ensure_site_packages(packages: typing.List[typing.Tuple[str, str]]):
     """ `packages`: list of tuples (<import name>, <pip name>) """
@@ -44,25 +41,27 @@ def ensure_site_packages(packages: typing.List[typing.Tuple[str, str]]):
         return
 
     import site
+    import importlib
     import importlib.util
 
     user_site_packages = site.getusersitepackages()
-    os.makedirs(user_site_packages, exist_ok = True)
     sys.path.append(user_site_packages)
 
-    modules_to_install = [module[1] for module in packages if not importlib.util.find_spec(module[0])]   
+    modules_to_install = [module[1] for module in packages if not importlib.util.find_spec(module[0])]
+    if not modules_to_install:
+        return
 
-    if modules_to_install:
-        import subprocess
-
-        if bpy.app.version < (2,91,0):
-            python_binary = bpy.app.binary_path_python
-        else:
-            python_binary = sys.executable
-
-        subprocess.run([python_binary, '-m', 'ensurepip'], check=True)
-        subprocess.run([python_binary, '-m', 'pip', 'install', *modules_to_install, "--user"], check=True)
-
+    if bpy.app.version < (2,91,0):
+        python_binary = bpy.app.binary_path_python
+    else:
+        python_binary = sys.executable
+        
+    import subprocess
+    subprocess.run([python_binary, '-m', 'ensurepip'], check=True)
+    subprocess.run([python_binary, '-m', 'pip', 'install', *modules_to_install, "--user"], check=True)
+    
+    importlib.invalidate_caches()
+    
 ensure_site_packages([
     ("PIL", "Pillow"),
     # ("imagesize", "imagesize"),
@@ -74,53 +73,72 @@ ensure_site_packages([
     ("pyperclip", "pyperclip"),
     # ("pathos", "pathos"),
     ("cv2", "opencv-contrib-python-headless"),
-    ("cached_property", "cached-property")
+    ("cached_property", "cached-property"),
+    ("inflection", "inflection")
 ])
 
-from . addon_preferences_ui import *
-from . view_3d_operator import *
-from . view_3d_ui import *
-from . shader_editor_operator import *
-from . shader_editor_ui import *
-from . data import *
-from . import utils
+ADDON_FILES_POSTFIXES = ('_operator.py', '_ui.py', 'data.py')
+ADDON_UTILS_POSTFIXES = ('utils.py', 'asset_parser.py', 'type_definer.py')
 
+import importlib
+modules = []
+utils_names = set()
+for file in os.scandir(os.path.dirname(__file__)):
+    if not file.is_file():
+        continue
+    
+    stem = os.path.splitext(file.name)[0]
+    
+    if file.name.endswith(ADDON_FILES_POSTFIXES):
+        modules.append(importlib.import_module('.' + stem, package = __package__))
+    elif file.name.endswith(ADDON_UTILS_POSTFIXES):
+        utils_names.add(stem)
+
+from . import utils
 config = utils.read_local_file("config.json") # type: dict
 if config and config.get("dev_mode"):
-    from . dev_tools import *
+    modules.append(importlib.import_module('.dev_tools', package = __package__))
 
-classes = [module for name, module in locals().items() if name.startswith("ATOOL")]
+class ATOOL_OT_reload_addon(bpy.types.Operator):
+    bl_idname = "atool.reload_addon"
+    bl_label = "Reload Atool Addon"
+    bl_description = "Reload the Atool addon."
+
+    def execute(self, context):
+        
+        utils_to_reload = set()
+        for module in modules:
+            for key, value in module.__dict__.items():
+                if key in utils_names:
+                    utils_to_reload.add(value)
+                    
+        for util in utils_to_reload:
+            importlib.reload(util)
+
+        for module in modules:
+            module.register.unregister()
+            importlib.reload(module)
+            module.register.register()
+            
+        wm = context.window_manager
+        wm["at_asset_previews"] = 0
+        wm["at_current_page"] = 1
+        
+        threading.Thread(target=wm.at_asset_data.update, args=(bpy.context,), daemon=True).start()
+        # threading.Thread(target=utils.init_find, daemon=True).start()
+        
+        print('Atool has been reloaded.')
+        
+        return {'FINISHED'}
 
 def register():
     start = timer()
 
     addon_updater_ops.register(bl_info)
+    bpy.utils.register_class(ATOOL_OT_reload_addon)
 
-    for c in classes:
-        bpy.utils.register_class(c)
-
-    bpy.types.MESH_MT_vertex_group_context_menu.append(vertex_group_menu)
-
-    addon_preferences = bpy.context.preferences.addons[__package__].preferences
-    wm = bpy.types.WindowManager
-    wm.at_asset_data = AssetData(addon_preferences.library_path, addon_preferences.auto_path)
-    wm.at_asset_previews = bpy.props.EnumProperty(items=get_browser_items)
-    wm.at_browser_asset_info = bpy.props.PointerProperty(type=ATOOL_PROP_browser_asset_info)
-    wm.at_template_info = bpy.props.PointerProperty(type=ATOOL_PROP_template_info)
-    wm.at_import_config = bpy.props.PointerProperty(type=ATOOL_PROP_import_config)
-    wm.at_search = bpy.props.StringProperty(name="", 
-        description= \
-        ':no_icon - with no preview \n'\
-        ':more_tags - less than 4 tags\n'\
-        ':no_url - with no url\n'\
-        ':i - intersection mode, default - subset\n'\
-        '-<tag> to exclude the tag\n'\
-        'id:<asset id> - find by id'
-        ,update=update_search, default='')
-    wm.at_current_page = bpy.props.IntProperty(name="Page", description="Page", update=update_page, min=1, default=1)
-    wm.at_assets_per_page = bpy.props.IntProperty(name="Assets Per Page", update=update_assets_per_page, min=1, default=24, soft_max=104)
-
-    bpy.types.Object.at_uv_multiplier = bpy.props.FloatProperty(default = 1)
+    for module in modules:
+        module.register.register()
 
     wm = bpy.context.window_manager
     wm["at_asset_previews"] = 0
@@ -135,25 +153,12 @@ def register():
 
 
 def unregister():
-
     addon_updater_ops.unregister()
+    bpy.utils.unregister_class(ATOOL_OT_reload_addon)
 
-    for c in classes:
-        bpy.utils.unregister_class(c)
-
-    bpy.types.VIEW3D_MT_add.remove(vertex_group_menu)
-
-    wm = bpy.types.WindowManager
-    del wm.at_asset_data
-    del wm.at_asset_previews
-    del wm.at_browser_asset_info
-    del wm.at_template_info
-    del wm.at_search
-    del wm.at_current_page
-    del wm.at_assets_per_page
-
-    del bpy.types.Object.at_uv_multiplier
-    
+    for module in modules:
+        module.register.unregister()
+        
 
 init_time = timer() - start
 log.info(f"__init__ time:\t {init_time:.2f} sec")

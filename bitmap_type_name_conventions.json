@@ -30,17 +30,18 @@
 				"nrm",
 				"n",
 				"ddn",
-				"ddna",
 				"nm",
 				"directx",
 				"dx_normal",
-				"gl_normal"
+				"gl_normal",
+				"nor_gl",
+				"nor_dx",
+				"normalsmap"
 			],
 			"albedo":[
 				"albedo",
 				"albd",
 				"alb",
-				"a",
 				"col_var2"
 			],
 			"diffuse":[
@@ -60,7 +61,8 @@
 				"clr",
 				"col_var1",
 				"col",
-				"c"
+				"c",
+				"colors"
 			],
 			"metallic":[
 				"metallic",
@@ -70,7 +72,8 @@
 				"mtllc",
 				"metal",
 				"metall",
-				"metalness"
+				"metalness",
+				"meta"
 			],
 			"roughness":[
 				"roughness",
@@ -98,7 +101,9 @@
 				"ambientocclusion",
 				"occlusion",
 				"ambient",
-				"o"
+				"o",
+				"a",
+				"aomap"
 			],
 			"bump":[
 				"bump",
@@ -150,6 +155,20 @@
 				"illum",
 				"glowcolor",
 				"emissioncolor"
+			],
+			"ignore":[
+				"cavity",
+				"translucency"
+			],
+			"cavity":[
+				"cavity"
+			],
+			"translucency":[
+				"translucency",
+				"translucent"
+			],
+			"exceptions":[
+				"ddna"
 			]
 		}
 	}

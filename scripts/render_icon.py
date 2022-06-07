@@ -1,3 +1,4 @@
+from itertools import accumulate
 import sys
 import argparse
 import json
@@ -40,6 +41,9 @@ def set_render_settings(scene: bpy.types.Scene):
     scene.render.resolution_y = 256
     scene.render.film_transparent = True
 
+    scene.render.use_crop_to_border = False
+    scene.render.use_border = False
+
     scene.render.image_settings.file_format = 'PNG'
     scene.render.image_settings.color_mode = 'RGBA'
 
@@ -66,20 +70,23 @@ if material_jobs:
     sys.path.append(site.getusersitepackages())
     sys.path.append(ATOOL_PATH)
 
-    import bl_utils
+    import node_utils
+    import type_definer
 
     filepath = os.path.join(ATOOL_PATH, 'scripts', 'render_icon.blend')
     bpy.ops.wm.open_mainfile(filepath=filepath, load_ui=False, use_scripts=False, display_file_selector=False)
 
     mat_sphere = bpy.data.objects['material_sphere']
 
-    type_definer_config = jobs['type_definer_config']
+    type_definer_config = type_definer.Filter_Config()
+    type_definer_config.__dict__.update(jobs['type_definer_config'])
 
     context = bpy.context
     set_render_settings(context.scene)
 
     for job in material_jobs:
-        material = bl_utils.get_material(job['files'], use_displacement = True, displacement_scale = job['displacement_scale'], invert_normal_y = job['invert_normal_y'], type_definer_config = type_definer_config)
+        type_definer_config.set_common_prefix_from_paths(job['files'])
+        material = node_utils.get_material(job['files'], use_displacement = True, displacement_scale = job['displacement_scale'], invert_normal_y = job['invert_normal_y'], type_definer_config = type_definer_config)
         mat_sphere.material_slots[0].material = material
 
         bpy.ops.render.render()
@@ -101,11 +108,24 @@ if object_jobs:
 
             if not object.visible_get():
                 continue
+            
+            if object.hide_render:
+                continue
 
-            if object.cycles.is_shadow_catcher == True:
+            # blender 3.0
+            if hasattr(object, 'is_shadow_catcher') and object.is_shadow_catcher:
                 continue
             
-            if object.cycles_visibility.camera == False:
+            # blender <3.0
+            if hasattr(object.cycles, 'is_shadow_catcher') and object.cycles.is_shadow_catcher:
+                continue
+            
+            # blender 3.0
+            if hasattr(object, 'visible_camera') and not object.visible_camera:
+                continue
+            
+            # blender <3.0
+            if hasattr(object, 'cycles_visibility') and not object.cycles_visibility.camera:
                 continue
 
             if object.type == 'LIGHT' and object.data.type == 'SUN':
@@ -122,7 +142,6 @@ if object_jobs:
                 coordinates.extend(matrix_world @ mathutils.Vector(v))
 
         camera_data = bpy.data.cameras.new("Camera")
-        camera_data.clip_end = 10000
         camera_data.lens = 120
 
         camera = bpy.data.objects.new("Camera", camera_data)
@@ -136,6 +155,23 @@ if object_jobs:
         co_return, scale_return = camera.camera_fit_coords(depsgraph, coordinates)
 
         camera.location = co_return
+        
+        import math
+        dist = math.sqrt(sum(x*x for x in co_return))
+        camera_data.clip_start *= dist
+        camera_data.clip_end = dist * 2
+        
+        if 0: # debug
+            def get_desktop():
+                try:
+                    import winreg
+                    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as key:
+                        return winreg.QueryValueEx(key, "Desktop")[0]
+                except:
+                    return os.path.expanduser("~/Desktop")
+                
+            filepath = os.path.join(get_desktop(), 'icon_test.blend')
+            bpy.ops.wm.save_as_mainfile(filepath=filepath)
 
         bpy.ops.render.render()
 

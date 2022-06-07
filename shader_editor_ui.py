@@ -1,5 +1,8 @@
 import bpy
 
+from . import bl_utils
+register = bl_utils.Register(globals())
+
 class ATOOL_PT_tools(bpy.types.Panel):
     bl_idname = "ATOOL_PT_tools"
     bl_label = "Tools"
@@ -21,6 +24,7 @@ class ATOOL_PT_tools(bpy.types.Panel):
         subcolumn.operator("atool.apply_material", text = "Import From", icon='ADD')
         subcolumn.operator("atool.convert_material", text = "Convert", icon='MODIFIER')
         subcolumn.operator("atool.replace_material", text = "Replace", icon='PASTEFLIPDOWN')
+        subcolumn.operator("atool.material_from_selected", text = "From Selected", icon='SELECT_SET')
         column.separator()
 
         column.operator("atool.make_material_links", text = "Link", icon='DRIVER')
@@ -36,6 +40,9 @@ class ATOOL_PT_tools(bpy.types.Panel):
         column.operator("atool.set_uv_scale_multiplier", icon='UV_DATA')
         column.operator("atool.to_pbr", icon='MATERIAL_DATA')
         column.operator("atool.ungroup")
+        column.operator("atool.bake_active_node")
+        column.operator("atool.arrange_nodes_by_name")
+        column.operator("atool.override_linked_material")
         column.separator()
 
         column.operator("atool.open_in_file_browser", text = "Open File Browser", icon='FILEBROWSER')

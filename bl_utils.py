@@ -1,6 +1,6 @@
 from __future__ import annotations
 import operator
-from re import A
+import threading
 import typing
 import os
 import subprocess
@@ -9,576 +9,77 @@ import math
 
 import bpy
 import mathutils
-from cached_property import cached_property
 import blf
 
-try:
-    from . import type_definer
-except:
-    import type_definer
+from cached_property import cached_property
 
-DEFAULT_ATTRS = {'__doc__', '__module__', '__slots__', 'bl_description', 'bl_height_default', 'bl_height_max', 'bl_height_min', 'bl_icon', 'bl_idname', 'bl_label', 'bl_rna', 'bl_static_type', 'bl_width_default', 'bl_width_max', 'bl_width_min', 'color', 'dimensions', 'draw_buttons', 'draw_buttons_ext', 'height', 'hide', 'input_template', 'inputs', 'internal_links', 'is_registered_node_type', 'label', 'location', 'mute', 'name', 'output_template', 'outputs', 'parent', 'poll', 'poll_instance', 'rna_type', 'select', 'show_options', 'show_preview', 'show_texture', 'socket_value_update', 'type', 'update', 'use_custom_color', 'width', 'width_hidden'}
-INNER_ATTRS = {'texture_mapping', 'color_mapping'}
-NOT_EXPOSED_ATTRS  = DEFAULT_ATTRS | INNER_ATTRS
+class Register():
+    def __init__(self, globals: dict):
+        self.globals: dict = globals
+        self.properties = {}
+        self.menu_items = []
+
+    @property
+    def classes(self):
+        return [module for name, module in self.globals.items() if name.startswith("ATOOL")]
+
+    def property(self, name, value, bpy_type = bpy.types.WindowManager):
+        self.properties[(bpy_type, name)] = value
+
+    def menu_item(self, type, object):
+        self.menu_items.append((type, object))
+  
+    def register(self):
+
+        for c in self.classes:
+            bpy.utils.register_class(c)
+
+        for (bpy_type, name), value in self.properties.items():
+            setattr(bpy_type, name, value)
+
+        for menu, object in self.menu_items:
+            menu.append(object)
+            
+
+    def unregister(self):
+
+        for c in self.classes:
+            bpy.utils.unregister_class(c)
+
+        for bpy_type, name in self.properties:
+            delattr(bpy_type, name)
+
+        for menu, object in self.menu_items:
+            menu.remove(object)
+
+if __package__:
+    from . import utils
+    from . import node_utils
+else:
+    import utils
+    import node_utils
 
 DIR_PATH = os.path.dirname(os.path.realpath(__file__))
 
-def lerp(value, in_min = 0, in_max = 1, out_min = 0, out_max = 1):
-    return out_min + (value - in_min) / (in_max - in_min) * (out_max - out_min)
-
-def clamp(value, minimum = 0, maximum = 1):
-    return min(max(value, minimum), maximum) 
-
-class Socket_Wrapper():
-    def __init__(self, socket, owner):
-        self.__dict__["__native__"] = set(dir(socket))
-        self.__data__ = socket
-        self.nodes: typing.List[typing.Tuple[Node_Wrapper , Socket_Wrapper]]
-        self.nodes = []
-        self.owner: Node_Wrapper
-        self.owner = owner
-
-    def __getattr__(self, attr):
-        if attr in self.__native__:
-            return getattr(self.__data__, attr)
-        else:
-            return self.__getattribute__(attr)
-
-    def __setattr__(self, attr, value):
-        if attr in self.__native__:
-            setattr(self.__data__, attr, value)
-        else:
-            super().__setattr__(attr, value)
-
-    def __repr__(self):
-        return ''.join(("<", self.__class__.__name__, " \"", self.identifier, "\">"))
-
-    def __getitem__(self, index):
-        return self.nodes[index]
-
-    def __len__(self):
-        return len(self.nodes)
-
-    def __iter__(self):
-        return iter(self.nodes)
-
-    def __contains__(self, item):
-        return True if item in self.nodes else False
-    
-    def __bool__(self): # ???
-        return True
-
-    def append(self, node):
-        self.nodes.append(node)
-        
-    def new(self, type, identifier = 0): 
-        """
-        `type`: node type to create
-        `identifier`: socket identifier of the created node
-        """
-        bl_node_tree = self.__data__.id_data
-        x, y = self.location
-        
-        new_bl_node = bl_node_tree.nodes.new(type)
-        
-        new_node = Node_Wrapper(new_bl_node)
-        
-        if self.is_output:
-            new_socket = new_node.inputs[identifier]
-        else:
-            new_socket = new_node.outputs[identifier]
-            
-        if new_socket == None:
-            bl_node_tree.nodes.remove(new_bl_node)
-            raise KeyError(f'No {"input" if self.is_output else "output"} socket "{identifier}" in the node "{new_node.name}"')
-        
-        self.join(new_socket)        
-        return new_node
-    
-    def join(self, socket: Socket_Wrapper, move = True):
-
-        bl_node_tree = self.__data__.id_data
-        bl_links = bl_node_tree.links
-        
-        if self.is_output and not socket.is_output:
-            self.nodes.append((socket.owner, socket))
-            socket.owner.add_input(socket, self.owner, self)
-            bl_links.new(self.__data__, socket.__data__)
-        elif not self.is_output and socket.is_output:
-            self.nodes.append((socket.owner, socket))
-            socket.owner.add_output(socket, self.owner, self)
-            bl_links.new(socket.__data__, self.__data__)
-        else:
-            raise TypeError(f'Invalid socket combination. The supplied socket must be {"input" if self.is_output else "output"}.')
-            
-
-        if move:
-            if self.is_output:
-                x, y = socket.location
-                x -= 100
-                shift = tuple(map(operator.sub, (x, y), self.location))
-                self.owner.location = tuple(map(operator.add, self.owner.location, shift))
-                for node in self.owner.all_children:
-                    node.location = tuple(map(operator.add, node.location, shift))
-            else:
-                x, y = self.location
-                x -= 100
-                shift = tuple(map(operator.sub, (x, y), socket.location))
-                socket.owner.location = tuple(map(operator.add, socket.owner.location, shift))
-                for node in socket.owner.all_children:
-                    node.location = tuple(map(operator.add, node.location, shift))
-        
-    @property
-    def location(self):
-        
-        node = self.node
-        x, y = node.location
-
-        if node.type == 'GROUP':
-            identifier = self.name
-        else:
-            identifier = self.identifier
-
-        if self.is_output:
-            index = node.outputs.find(identifier)
-            x = x + node.width
-            y = y - 35 - 21.5 * index
-        else:
-            index = node.inputs.find(identifier)
-            
-            attrs = [attr for attr in dir(node) if attr not in NOT_EXPOSED_ATTRS]
-            if not attrs or node.show_options == False:
-                attr_gap = 0
-            elif len(attrs) == 1:
-                attr_gap = 30
-            else:
-                attr_gap = 30 + (len(attrs) - 1) * 24.5
-                
-            y = y - 35 - 21.5*len(node.outputs) - 3 - attr_gap - 21.5 * index
-
-        return x, y
-
-    @property
-    def default_value_converter(self):
-        value = self.default_value
-        type = self.type
-        if type in ('VALUE', 'INT'):
-            return {
-                'VALUE': value,
-                'RGBA': (*(value,)*3, 1), # not posible
-                'VECTOR': (value,)*3
-            }
-        elif type == 'RGBA':
-            return {
-                'VALUE': value[0]*0.2126 + value[1]*0.7152 + value[2]*0.0722,
-                'RGBA': value,
-                'VECTOR': value[:3]
-            }
-        elif type == 'VECTOR':
-            return {
-                'VALUE': sum(value)/3,
-                'RGBA': (*value, 1), # not posible
-                'VECTOR': value
-            }
-
-class Sockets_Wrapper(typing.Dict[typing.Union[str, int], Socket_Wrapper], dict):
-    def __init__(self, *args, **kwargs):
-        super().__init__( *args, **kwargs)
-        self.identifiers = tuple(dict.keys(self))
-    
-    def __getitem__(self, key) -> Socket_Wrapper:
-        if isinstance(key, int):
-            return dict.__getitem__(self, self.identifiers[key])
-        else:
-            return dict.__getitem__(self, key)
-
-    def __iter__(self):
-        return iter(self.values())
-
-    def get(self, key) -> Socket_Wrapper:
-        if isinstance(key, int):
-            key = self.identifiers.get(key)
-            if not key:
-                return None
-            return dict.get(self, key)
-        else:
-            return dict.get(self, key)
-            
-    def __setitem__(self, key, value):
-        if isinstance(key, int):
-            dict.__setitem__(self, self.identifiers[key], value)
-        else:
-            dict.__setitem__(self, key, value)
-
-class Node_Wrapper:
-    def __init__(self, node):
-        self.__dict__["__native__"] = set(dir(node))
-        self.__native__.difference_update(("inputs", "outputs"))
-        self.__data__ = node
-        # self.outputs: typing.Dict[typing.Union[str, int], Socket_Wrapper]
-        self.outputs = Sockets_Wrapper((output.identifier, Socket_Wrapper(output, self)) for output in node.outputs)
-        self.o = self.outputs
-        # self.inputs: typing.Dict[typing.Union[str, int], Socket_Wrapper]
-        self.inputs = Sockets_Wrapper((input.identifier, Socket_Wrapper(input, self)) for input in node.inputs)
-        self.i = self.inputs
-    
-    def __repr__(self):
-        return ''.join(("<", self.__class__.__name__, " \"", self.name, "\">"))
-        
-    def __getattr__(self, attr):
-        if attr in self.__native__:
-            return getattr(self.__data__, attr)
-        else:
-            return self.__getattribute__(attr)
-        
-    def __setattr__(self, attr, value):
-        if attr in self.__native__:
-            setattr(self.__data__, attr, value)
-        else:
-            super().__setattr__(attr, value)
-            
-    def __iter__(self) -> typing.Iterator[Socket_Wrapper]:
-        return iter(self.inputs.values())
-    
-    def __contains__(self, item):
-        return True if item in self.inputs.values() else False
-    
-    def __len__(self):
-        return len(self.inputs)
-    
-    def __bool__(self): # ???
-        return True
-        
-    def __getitem__(self, key) -> Node_Wrapper:
-        
-        if isinstance(key, int):
-            socket = self.inputs[self.__data__.inputs[key].identifier]
-        else:
-            socket = self.inputs[key]
-        
-        nodes = socket.nodes
-        node = nodes[0][0] if nodes else None
-        return node
-    
-    def get(self, key, is_output = True):
-        
-        if isinstance(key, int):
-            if is_output:
-                socket = self.outputs[self.__data__.outputs[key].identifier]
-            else:
-                socket = self.inputs[self.__data__.inputs[key].identifier]
-        else:
-            if is_output:
-                socket = self.outputs[key]
-            else:
-                socket = self.inputs[key]
-            
-        nodes = socket.nodes
-        return nodes[0] if nodes else None
-        
-    def add_input(self, to_socket, from_node, from_socket):
-        self.inputs[to_socket.identifier].append((from_node, from_node.outputs[from_socket.identifier]))
-    
-    def add_output(self, from_socket, to_node, to_socket):
-        self.outputs[from_socket.identifier].append((to_node, to_node.inputs[to_socket.identifier]))
-        
-    def value(self, key, convert = True):
-        if isinstance(key, int):
-            value = self.__data__.inputs[key].default_value
-        else:
-            if key in self.inputs.keys():
-                value = self.inputs[key].__data__.default_value
-            else:
-                return None
-        try:
-            return tuple(value)
-        except:
-            return value
-        
-    def delete(self):
-        children: typing.List[Node_Wrapper]
-        children = []
-        parents: typing.List[Node_Wrapper]
-        parents = []
-        
-        for input in self.inputs.values():
-            for link in input.nodes:
-                children.append(link[0])
-                link[1].nodes.remove((self, input))
-        
-        for output in self.outputs.values():
-            for link in output.nodes:
-                parents.append(link[0])
-                link[1].nodes.remove((self, output))
-                
-        bl_node_tree = self.__data__.id_data
-        bl_node_tree.nodes.remove(self.__data__)
-        
-        return children, parents   
-                
-    @property
-    def children(self):
-        return [node[0] for socket in self.inputs.values() for node in socket.nodes]
-    
-    @property
-    def all_children(self) -> typing.List[Node_Wrapper]:
-        nodes = []
-        for socket in self.inputs.values():
-            for node in socket.nodes:
-                nodes.append(node[0])
-                nodes.extend(node[0].all_children)
-        return list(dict.fromkeys(nodes))
-    
-    @property
-    def parents(self):
-        return [node[0] for socket in self.outputs.values() for node in socket.nodes]
-    
-    @property
-    def all_parents(self):
-        nodes = []
-        for socket in self.outputs.values():
-            for node in socket.nodes:
-                nodes.append(node[0])
-                nodes.extend(node[0].all_parents)
-        return list(dict.fromkeys(nodes))
-    
-    def get_input(self, key, socket_only = False):
-        """ Get the socket inputting socket or a value if the socket is not connected. """
-        socket = self.inputs[key]
-        if socket.nodes:
-            return socket.nodes[0][1]
-        else:
-            if socket_only:
-                return None
-            return self.value(key)
-        
-    def set_input(self, key, value):
-        socket = self.inputs.get(key)
-        if socket:
-            if isinstance(value, Socket_Wrapper):
-                socket.join(value)
-            else:
-                socket.default_value = value
-        
-    def set_inputs(self, settings):
-        attributes = settings.pop("Attributes", None)
-        if attributes:
-            for attribute, value in attributes.items():
-                if hasattr(self.__data__, attribute):
-                    setattr(self.__data__, attribute, value)
-        for key, value in settings.items():
-            if value != None:
-                self.set_input(key, value)
-                
-    def lerp_input(self, value, from_min = 0, from_max = 1, to_min = 0, to_max = 1, clamp = False, clamp_min = 0, clamp_max = 1):
-        if isinstance(value, Socket_Wrapper):
-            map_range = value.new("ShaderNodeMapRange", "Value")
-            map_range.inputs["From Min"].default_value = from_min
-            map_range.inputs["From Max"].default_value = from_max
-            map_range.inputs["To Min"].default_value = to_min
-            map_range.inputs["To Max"].default_value = to_max
-            map_range.clamp = clamp
-            value = map_range.outputs["Result"]
-        else:
-            value = to_min + (value - from_min) / (from_max - from_min) * (to_max - to_min)
-            if clamp:
-                value = min(max(value, clamp_min), clamp_max)
-        return value
-    
-    def get_pbr_inputs(self, approximate = True):
-        """ Get the PBR inputs. """
-                
-        if self.type == "BSDF_ANISOTROPIC":
-            pbr = {
-                "Base Color": self.get_input("Color"),
-                "Roughness": self.get_input("Roughness"),
-                "Anisotropic": self.get_input("Anisotropy"),
-                "Anisotropic Rotation": self.get_input("Rotation"),
-                "Normal": self.get_input("Normal", True),
-                "Tangent": self.get_input("Tangent", True),
-                "Attributes": {"distribution": self.distribution}
-            }
-        elif self.type == "BSDF_DIFFUSE":
-            pbr = {
-                "Base Color": self.get_input("Color"),
-                "Roughness": self.get_input("Roughness"),
-                "Normal": self.get_input("Normal", True)
-            }
-            if approximate:
-                pbr["Roughness"] = self.lerp_input(pbr["Roughness"], to_min = 0.75)
-        elif self.type == "EMISSION":
-            pbr = {
-                "Emission": self.get_input("Color"),
-                "Emission Strength": self.get_input("Strength")
-            }
-        elif self.type == "BSDF_GLASS":
-            pbr = {
-                "Base Color": self.get_input("Color"),
-                "Roughness": self.get_input("Roughness"),
-                "IOR": self.get_input("IOR"),
-                "Normal": self.get_input("Normal", True),
-                "Attributes": {"distribution": self.distribution}
-            }
-        elif self.type == "BSDF_GLOSSY":
-            pbr = {
-                "Base Color": self.get_input("Color"),
-                "Roughness": self.get_input("Roughness"),
-                "Normal": self.get_input("Normal", True),
-                "Metallic": 1
-            }
-            # SHARP BECKMANN GGX ASHIKHMIN_SHIRLEY MULTI_GGX
-            distribution = self.distribution
-            if distribution == 'SHARP':
-                pbr["Roughness"] = 0
-            elif distribution in ('BECKMANN', 'ASHIKHMIN_SHIRLEY'):
-                pbr["Roughness"] = self.lerp_input(pbr["Roughness"], to_max = 0.7)
-                
-            if distribution not in ('GGX', 'MULTI_GGX'):
-                distribution = 'GGX'
-                
-            pbr["Attributes"] = {"distribution": distribution}
-
-        elif self.type == "BSDF_REFRACTION":
-            pbr = {
-                "Base Color": self.get_input("Color"),
-                "Roughness": self.get_input("Roughness"),
-                "IOR": self.get_input("IOR"),
-                "Normal": self.get_input("Normal", True),
-                "Attributes": {"distribution": self.distribution}
-            }
-        elif self.type == "SUBSURFACE_SCATTERING":
-            pbr = {
-                "Base Color": self.get_input("Color"),
-                "Subsurface": self.get_input("Scale"),
-                "Subsurface Radius": self.get_input("Radius"),
-                #"Texture Blur": self.get_input("Texture Blur"),
-                #"Sharpness": self.get_input("Sharpness"),
-                "Normal": self.get_input("Normal", True),
-                "Attributes": {"falloff": self.falloff}
-            }
-        elif self.type == "BSDF_TOON":
-            pbr = {
-                "Base Color": self.get_input("Color"),
-                #"Size": self.get_input("Size"),
-                #"Smooth": self.get_input("Smooth"),
-                "Normal": self.get_input("Normal", True),
-                #"Attributes": {"component": self.component}
-            }
-        elif self.type == "BSDF_TRANSLUCENT":
-            pbr = {
-                "Base Color": self.get_input("Color"),
-                "Normal": self.get_input("Normal", True),
-            }
-        elif self.type == "BSDF_TRANSPARENT":
-            pbr = {
-                "Base Color": self.get_input("Color"),
-            }
-        elif self.type == "BSDF_VELVET":
-            pbr = {
-                "Base Color": self.get_input("Color"),
-                #"Sheen": self.get_input("Sigma"),
-                "Normal": self.get_input("Normal", True),
-            }
-        return pbr
-
-    def get_pbr_socket(self, map_type):
-        if map_type == "albedo":
-            return self.inputs["Base Color"]
-        elif map_type == "ambient_occlusion":
-            pass
-        elif map_type == "bump":
-            bump = self.inputs["Normal"].new('ShaderNodeBump')
-            return bump.inputs['Height']
-        elif map_type == "diffuse":
-            return self.inputs["Base Color"]
-        elif map_type == "displacement":
-            pass
-        elif map_type == "emissive":
-            return self.inputs["Emission"]
-        elif map_type == "gloss":
-            invert = self.inputs["Roughness"].new('ShaderNodeInvert')
-            return invert.inputs['Color']
-        elif map_type == "metallic":
-            return self.inputs['Metallic']
-        elif map_type == "normal":
-            normal_map = self.inputs["Normal"].new('ShaderNodeNormalMap')
-            return normal_map.inputs['Color']
-        elif map_type == "opacity":
-            return self.inputs['Alpha']
-        elif map_type == "roughness":
-            return self.inputs['Roughness']
-        elif map_type == "specular":
-            return self.inputs['Specular']
-
-class Node_Tree_Wrapper(typing.Dict[str, Node_Wrapper], dict):
-    def __init__(self, node_tree):
-              
-        self.node_tree = node_tree
-        self.links = node_tree.links
-        self.nodes = node_tree.nodes
-
-        for node in self.nodes:
-            self[node.name] = Node_Wrapper(node)
-        
-        for link in self.links:
-            if link.is_hidden or not link.is_valid:
-                continue
-            
-            to_node = self[link.to_node.name]
-            from_node = self[link.from_node.name]
-
-            to_socket = link.to_socket
-            from_socket = link.from_socket
-            
-            to_node.add_input(to_socket, from_node, from_socket)
-            from_node.add_output(from_socket, to_node, to_socket)
-
-    @property
-    def output(self):
-        for target in ('ALL', 'CYCLES', 'EEVEE'):
-            active_output = self.node_tree.get_output_node(target)
-            if active_output:
-                return self[active_output.name]
-
-    def __iter__(self) -> typing.Iterator[Node_Wrapper]:
-        return iter(self.values())
-
-    def get_by_type(self, type) -> typing.List[Node_Wrapper]:
-        return [node for node in self.values() if node.type == type]
-
-    def new(self, type):
-        node = Node_Wrapper(self.nodes.new(type))
-        self[node.name] = node
-        return node
-
-    @cached_property
-    def displacement_input(self) -> Socket_Wrapper:
-        output = self.output
-        displacement = output.i["Displacement"].new("ShaderNodeDisplacement", "Displacement")
-        displacement.space = 'WORLD'
-        x, y = output.location
-        displacement.location = (x, y - 150)
-        return displacement.i["Height"]
-
 
 class Reference:
-    """ Reference for using with undo/redo """
+    """ Reference for using with undo/redo/reload """
 
-    def __init__(self, object, origin = None):
+    def __init__(self, block: bpy.types.ID, origin: bpy.types.ID = None):
         """
-        `object`: object to get reference for
+        `block`: data block to get reference for
         `origin`: origin of the ID, required for embedded `ShaderNodeTree`
         """
-        id_data = object.id_data
-        is_embedded_data = id_data.is_embedded_data
-        self.is_embedded_data = is_embedded_data
+        
+        id_data: bpy.types.ID = block.id_data
+        self.is_embedded_data = id_data.is_embedded_data
 
         id_type = id_data.__class__.__name__
 
         if id_type not in ("Object", "Material", "ShaderNodeTree", "Image", "Library"):
             raise NotImplementedError("Reference for the type '{id_type}' is not yet implemented.")
 
-        if id_type == 'ShaderNodeTree' and is_embedded_data: # if is material
+        if id_type == 'ShaderNodeTree' and self.is_embedded_data: # if is material
             if origin is None:
                 raise TypeError("Origin of the ShaderNodeTree is required.")
             self.origin = Reference(origin)
@@ -586,43 +87,51 @@ class Reference:
         self.id_type = id_type
         self.id_name = id_data.name
 
-        id_library = id_data.library
-        if id_library:
-            self.id_library = id_library.filepath
+        library = id_data.library
+        if library:
+            self.library_path = library.filepath
         else:
-            self.id_library = None
+            self.library_path = None
 
         try:
-            self.path_from_id = object.path_from_id()
+            self.path_from_id = block.path_from_id()
         except:
             self.path_from_id = None
 
-    def get(self):
+    @staticmethod
+    def get_collection_item(collection: bpy.types.bpy_prop_collection, id_name: str, library_path: str) -> bpy.types.ID:
+        try:
+            return collection[id_name, library_path]
+        except:
+            return None
+
+    def get(self) -> bpy.types.bpy_struct:
         id_type = self.id_type
 
         if id_type == "Object":
-            id_data = bpy.data.objects.get(self.id_name, self.id_library)
+            id_data = self.get_collection_item(bpy.data.objects, self.id_name, self.library_path)
         elif id_type == "Material":
-            id_data = bpy.data.materials.get(self.id_name, self.id_library)
+            id_data = self.get_collection_item(bpy.data.materials, self.id_name, self.library_path)
         elif id_type == "ShaderNodeTree":
             if self.is_embedded_data: # if is material
                 id_data = self.origin.get().node_tree
             else:
-                id_data = bpy.data.node_groups.get(self.id_name, self.id_library)
+                id_data = self.get_collection_item(bpy.data.node_groups, self.id_name, self.library_path)
         elif id_type == "Image":
-            id_data = bpy.data.images.get(self.id_name, self.id_library)
+            id_data = self.get_collection_item(bpy.data.images, self.id_name, self.library_path)
         elif id_type == "Library":
-            id_data = bpy.data.libraries.get(self.id_name, self.id_library)
+            id_data = self.get_collection_item(bpy.data.libraries, self.id_name, self.library_path)
         
         if not id_data:
             return None
 
         if self.path_from_id:
-            object = id_data.path_resolve(self.path_from_id)
+            data = id_data.path_resolve(self.path_from_id)
         else:
-            object = id_data
+            data = id_data
 
-        return object
+        return data
+
 
 class Missing_File:
     # SUPPORTED_TYPES = ('Image', 'Library')
@@ -648,120 +157,181 @@ class Missing_File:
         block.reload()
 
 
-def get_material(textures: typing.List[str], name = 'New Material', use_displacement = False, displacement_scale = 0.1, invert_normal_y = {}, use_fake_user = False, type_definer_config = {'is_rgb_plus_alpha': True}):
-    material = bpy.data.materials.new(name=name)
-    material.use_nodes = True
-    material.use_fake_user = use_fake_user
-    material.cycles.displacement_method = 'DISPLACEMENT'
+class Dependency_Getter(dict):
+    """Getting Image and Library dependencies. This class will be extended if needed."""
 
-    textures_dict = {}
-    for texture in textures:
-        texture_type = type_definer.get_type(os.path.basename(texture), type_definer_config)
-        textures_dict[texture] = texture_type
+    def __init__(self):
+        self._children = None # type: typing.Dict[bpy.types.object, typing.List[bpy.types.object]]
+    
+    def cached(func):
+        
+        def wrapper(self: Dependency_Getter, *args, **kwargs):
+            id_data = args[0]
+            id_type = id_data.__class__
+
+            id_type_cache = self.get(id_type)
+            if not id_type_cache:
+                self[id_type] = id_type_cache = {}
+
+            dependencies = id_type_cache.get(id_data)
+            if not dependencies:
+                id_type_cache[id_data] = dependencies = func(self, *args, **kwargs)
+
+            return dependencies
+
+        return wrapper
+
+    @property
+    def children(self):
+
+        if self._children:
+            return self._children
+
+        self._children = utils.list_by_key(bpy.data.objects, operator.attrgetter('parent'))
+        return self._children
+
+    @cached
+    def get_node_tree_dependencies(self, node_tree: bpy.types.NodeTree):
+        
+        dependencies = {} # type: typing.Dict[bpy.types.ID, typing.List[bpy.types.ID]]
+        def add(dependency, ID = node_tree):
+            utils.map_to_list(dependencies, ID, dependency)
+
+        if node_tree.library and node_tree.library.filepath:
+            add(node_tree.library)
+
+        for node in node_tree.nodes:
             
-    node_tree = Node_Tree_Wrapper(material.node_tree)
-    principled = node_tree.get_by_type('BSDF_PRINCIPLED')[0]
+            if node.type == 'TEX_IMAGE' and node.image and node.image.source == 'FILE' and node.image.filepath:
+                add(node.image)
 
-    for path, type in textures_dict.items():
-        if not type:
-            continue
-        
-        if 'opacity' in type:
-            material.blend_method = 'CLIP'
-        
-        image_node = node_tree.new('ShaderNodeTexImage')
-        image = bpy.data.images.load(filepath = path, check_existing=True)
-        image_node.image = image
-
-        def set_displacement(output):
-            displacement_input = node_tree.displacement_input # type: Socket_Wrapper
-            displacement_input.owner.i['Scale'].default_value = displacement_scale
-            displacement_input.join(output, move = False)
-        
-        if type[0] not in ("diffuse", "albedo", "emissive", "ambient_occlusion"):
-            image.colorspace_settings.name = 'Non-Color'
-        
-        is_moved = False
-        type_len = len(type)
-        
-        if type_len in (1, 2):
-            subtype = type[0]
-            output = image_node.outputs[0]
-            
-            if subtype == 'normal' and invert_normal_y[path]:
-                mix = output.new('ShaderNodeMixRGB', 'Color1')
-                mix.blend_type = 'DIFFERENCE'
-                mix.inputs['Fac'].default_value = 1
-                mix.inputs['Color2'].default_value = (0, 1, 0, 1)
-                output = mix.outputs['Color']
-
-            if use_displacement and subtype == 'displacement':
-                set_displacement(output)
-                continue
-            
-            socket = principled.get_pbr_socket(subtype)
-            if socket:
-                socket.join(output, move = not is_moved)
-                is_moved = True
+            elif node.type == 'GROUP' and node.node_tree:
+                # add(node.node_tree)
+                add(self.get_node_tree_dependencies(node.node_tree), node.node_tree)
                 
-        elif type_len in (3, 4):
-            separate = image_node.outputs[0].new('ShaderNodeSeparateRGB')
-            for index, subtype in enumerate(type):
-                if index == 3:
-                    break
+        return dependencies
 
-                output = separate.outputs[index]
+    @cached
+    def get_material_dependencies(self, material:  bpy.types.Material):
+        return self.get_node_tree_dependencies(material.node_tree)
 
-                if use_displacement and subtype == 'displacement':
-                    set_displacement(output)
+    @cached
+    def get_collection_dependencies(self, collection: bpy.types.Collection):
+
+        dependencies = {} # type: typing.Dict[bpy.types.ID, typing.List[bpy.types.ID]]
+        def add(dependency):
+            utils.map_to_list(dependencies, collection, dependency)
+
+        if collection.library and collection.library.filepath:
+            add(collection.library)
+        
+        for object in collection.all_objects:
+            add(self.get_object_dependencies(object))
+
+        return dependencies
+
+    @cached
+    def get_object_dependencies(self, object: bpy.types.Object):
+
+        dependencies = {} # type: typing.Dict[bpy.types.ID, typing.List[bpy.types.ID]]
+        def add(source, ID: bpy.types.ID = object):
+            utils.map_to_list(dependencies, ID, source)
+
+        if object.library and object.library.filepath:
+            add(object.library)
+
+        if object.data:
+            if object.data.library and object.data.library.filepath:
+                add(object.data.library)
+                # add(object.data)
+                # add(object.data.library, object.data)
+
+            if hasattr(object.data, 'materials'):
+                for material in object.data.materials:
+                    if material:
+                        add(self.get_material_dependencies(material))
+                        # add(material)
+                        # add(self.get_material_dependencies(material), material)
+
+        if object.instance_type == 'COLLECTION' and object.instance_collection:
+            # add(object.instance_collection)
+            add(self.get_collection_dependencies(object.instance_collection))
+
+        if object.instance_type in ('VERTS', 'FACES'):
+            for child in self.children[object]:
+                # add(child)
+                add(self.get_object_dependencies(child))
+
+        particle_systems = [modifier.particle_system.settings for modifier in object.modifiers if modifier.type == 'PARTICLE_SYSTEM'] # type: typing.List[bpy.types.ParticleSettings]
+        for particle_system in particle_systems:
+
+            if particle_system.render_type == 'COLLECTION' and particle_system.instance_collection:
+                add(self.get_collection_dependencies(particle_system.instance_collection))
+                # add(particle_system.instance_collection)
+                # add(particle_system)
+                # add(self.get_collection_dependencies(particle_system.instance_collection), particle_system)
+            elif particle_system.render_type == 'OBJECT' and particle_system.instance_object:
+                add(self.get_object_dependencies(particle_system.instance_object))
+                # add(particle_system.instance_object)
+                # add(particle_system)
+                # add(self.get_object_dependencies(particle_system.instance_object), particle_system)
+
+        return dependencies
+
+    def get_dependencies(self, ID: bpy.types.ID):
+        if ID.__class__ == bpy.types.Object:
+            return self.get_object_dependencies(ID)
+        elif ID.__class__ == bpy.types.Collection:
+            return self.get_collection_dependencies(ID)
+        elif ID.__class__ == bpy.types.Material:
+            return self.get_material_dependencies(ID)
+        elif ID.__class__ == bpy.types.NodeTree:
+            return self.get_node_tree_dependencies(ID)
+
+    def get_by_type(self, dependencies: dict, type = ('Library', 'Image')):
+        """ Recursively getting dependencies by `type` """
+
+        result = []
+
+        for IDs in dependencies.values():
+            for ID in IDs:
+                if ID.__class__.__name__ in type:
+                    result.append(ID)
+
+                sub_dependencies = self.get_dependencies(ID)
+                if sub_dependencies:
+                    result.extend(self.get_by_type(sub_dependencies, type = type))
+        
+        return utils.deduplicate(result)
+
+    def get_object_dependencies_by_type(self, object: bpy.types.Object, type = ('Library', 'Image')):
+
+        result = []
+
+        for IDs in self.get_object_dependencies(object).values():
+            for ID in IDs:
+                id_type = ID.__class__.__name__
+                if not id_type in type:
                     continue
+                if id_type == 'Image' and not ID.source == 'FILE':
+                    continue
+                result.append(ID)
 
-                socket = principled.get_pbr_socket(subtype)
-                if socket:
-                    socket.join(output, move = not is_moved)
-                    is_moved = True
-                    
-        if type_len in (2, 4):
-            image.alpha_mode = 'CHANNEL_PACKED'
+        return utils.deduplicate(result)
 
-            subtype = type[type_len - 1]
-            output = image_node.outputs['Alpha']
 
-            if use_displacement and subtype == 'displacement':
-                set_displacement(output)
-                continue
-
-            input_alpha = principled.get_pbr_socket(subtype)
-            if input_alpha:
-                input_alpha.join(output, move = not is_moved)
-
-    image_nodes = [node for node in node_tree.node_tree.nodes if node.type == 'TEX_IMAGE']
-    if image_nodes:
-        x_locations = [node.location[0] for node in image_nodes]
-        min_x_location = min(x_locations)
-        for node in image_nodes:
-            x, y = node.location
-            node.location = (min_x_location, y)
-
-    return material
-
-def get_all_images(node_tree):
-    all_images = []
-    for node in node_tree.nodes:
-        if node.type == 'TEX_IMAGE' and node.image:
-            all_images.append(bpy.path.abspath(node.image.filepath))
-        elif node.type == 'GROUP' and node.node_tree:
-            all_images.extend(get_all_images(node.node_tree))
-    return all_images
-
-def arrage_by_materials(objects: typing.Iterable[bpy.types.Object], by_materials = True, by_images = True):
+def arrange_by_materials(objects: typing.Iterable[bpy.types.Object], by_materials = True, by_images = True):
 
     sets = {} # type: typing.Dict[frozenset, typing.List[bpy.types.Object]]
     sets['empty'] = []
 
     def append(object):
         
-        materials = [material for material in object.data.materials if material]
+        if object.data and hasattr(object.data, 'materials'):
+            materials = [material for material in object.data.materials if material]
+        else:
+            materials = None
+
         if not materials:
             sets['empty'].append(object)
             return
@@ -771,7 +341,7 @@ def arrage_by_materials(objects: typing.Iterable[bpy.types.Object], by_materials
         if by_images:
             all_images = []
             for material in materials:
-                all_images.extend(get_all_images(material.node_tree))
+                all_images.extend(node_utils.get_all_images(material.node_tree))
             object_set.extend(all_images)
         
         if by_materials:
@@ -829,7 +399,7 @@ def arrage_by_materials(objects: typing.Iterable[bpy.types.Object], by_materials
             object.location = (j*x,  y_offset, 0)
 
 
-def run_blender(filepath: str = None, script: str = None, argv: list = None, use_atool = True, library_path: str = None, stdout = subprocess.DEVNULL):
+def run_blender(filepath: str = None, script: str = None, argv: list = None, use_atool = True, library_path: str = None, stdout = None):
 
     args = [bpy.app.binary_path, '-b', '--factory-startup']
 
@@ -851,7 +421,7 @@ def run_blender(filepath: str = None, script: str = None, argv: list = None, use
     if argv:
         args.extend(argv)
 
-    return subprocess.run(args, stdout=stdout, check = True)
+    return subprocess.run(args, stdout=stdout, check = True, text = True)
 
 
 def get_world_dimensions(objects: typing.Iterable[bpy.types.Object]):
@@ -890,6 +460,8 @@ def get_world_dimensions(objects: typing.Iterable[bpy.types.Object]):
     return (x, y, z), (loc_x, loc_y, loc_z)
 
 
+DRAWER_SLEEP_TIME = 1/16
+
 class Progress_Drawer:
 
     def draw_callback(self):
@@ -898,35 +470,57 @@ class Progress_Drawer:
         blf.size(0, 20, 72)
         blf.draw(0, self.string)
 
-    def __iter__(self):
+    def string_update(self):
+        start_time = time.time()
+        last_index = 0
         total = self.total
         prefix = self.prefix
+        show_multiplier = self.show_multiplier
 
-        start_time = time.time()
-        past_time = 0
-
-        show_mult = 1
-        if self.is_file:
-            show_mult = CHUNK_SIZE
-
-        if not self.total:
-            total = len(self.iterator)
-
-        for index, item in enumerate(self.iterator, start = 1):
-            yield item
+        while self.is_running:
+            if last_index == self._index:
+                time.sleep(DRAWER_SLEEP_TIME)
+                continue
 
             current_time = time.time()
 
             past_time = int(current_time - start_time)
             past_min, past_sec = divmod(past_time, 60)
 
-            remain_time = int(past_time/index * (total - index))
+            remain_time = int(past_time/self._index * (total - self._index))
             remain_min, remain_sec = divmod(remain_time, 60)
 
-            total_time = int(past_time/index * (total - index) + past_time)
+            total_time = int(past_time/self._index * (total - self._index) + past_time)
             total_min, total_sec = divmod(int(total_time), 60)
 
-            self.string = f'{prefix}: {int(index/total * 100)}% | {index*show_mult}/{total*show_mult} | Past: {past_min}:{past_sec:02d} Remain: {remain_min}:{remain_sec:02d} Total: {total_min}:{total_sec:02d}'
+            self.string = ' | '.join((
+                f"{prefix}: {int(self._index / total * 100)}%",
+                f"{self._index * show_multiplier} / {total * show_multiplier}",
+                f"Total: {total_min}:{total_sec:02d} Past: {past_min}:{past_sec:02d} Remain: {remain_min}:{remain_sec:02d}"
+            ))
+
+            time.sleep(DRAWER_SLEEP_TIME)
+
+    def __iter__(self):
+
+        if not self.total:
+            self.total = len(self.iterator)
+        if not self.total:
+            return
+
+        self.show_multiplier = 1
+        if self.is_file:
+            self.show_multiplier = CHUNK_SIZE
+
+        self.is_running = 1
+        self._index = 1
+        threading.Thread(target = self.string_update, args = (), daemon = True).start()
+
+        for index, item in enumerate(self.iterator, start = 1):
+            self._index = index
+            yield item
+
+        self.is_running = 0
 
     def __init__(self, iterator: typing.Iterable, total: int = None, prefix = '', indent = 0, is_file = False):
         self.iterator = iterator
@@ -939,7 +533,7 @@ class Progress_Drawer:
     
     def __enter__(self):
         self.handler = bpy.types.SpaceView3D.draw_handler_add(self.draw_callback, tuple(), 'WINDOW', 'POST_PIXEL')
-        self.next = 1/24
+        self.next = DRAWER_SLEEP_TIME
         bpy.app.timers.register(self.update_view_3d_regions, persistent = True)
         return self
         
@@ -955,7 +549,6 @@ class Progress_Drawer:
                         if region.type == 'WINDOW':
                             region.tag_redraw()
         return self.next
-
 
 def iter_with_progress(iterator: typing.Iterable, indent = 0, prefix = '', total: int = None):
 
@@ -978,9 +571,106 @@ def download_with_progress(response, path: str, total: int, region: bpy.types.Re
                 f.write(chunk)
         return
 
-    total_cunks = math.ceil(total/CHUNK_SIZE)
+    total_chunks = math.ceil(total/CHUNK_SIZE)
 
-    with Progress_Drawer(range(total_cunks), is_file = True, prefix = prefix, total = total_cunks, indent = indent) as drawer:
+    with Progress_Drawer(range(total_chunks), is_file = True, prefix = prefix, total = total_chunks, indent = indent) as drawer:
         with open(path, "wb") as f:
             for i, chunk in zip(drawer, response.iter_content(chunk_size=4096)):
                 f.write(chunk)
+
+
+def abspath(path, library:bpy.types.Library = None):
+    return os.path.realpath(bpy.path.abspath(path, library = library))
+
+def get_block_abspath(block: bpy.types.ID):
+    return os.path.realpath(bpy.path.abspath(block.filepath, library = block.library))
+
+def backward_compatibility_get(object: bpy.types.ID, attr_name: typing.Iterable[str], sentinel = object()):
+    for i, attr in enumerate(attr_name):
+        value = object.get(attr, sentinel) 
+        if value == sentinel:
+            continue
+
+        if i != 0:
+            del object[attr]
+            object[attr_name[0]] = value
+            
+        return value
+    return None
+
+def get_library_by_path(path: str) -> bpy.types.Library:
+    path = abspath(path)
+    for library in bpy.data.libraries:
+        if abspath(library.filepath) == path:
+            return library 
+    
+def get_context_copy_with_object(context: bpy.types.Context, object: bpy.types.Object) -> dict:
+    override = context.copy()
+    override['selectable_objects'] = [object]
+    override['selected_objects'] = [object]
+    override['selected_editable_objects'] = [object]
+    override['editable_objects'] = [object]
+    override['visible_objects'] = [object]
+    override['active_object'] = object
+    override['object'] = object
+    return override
+
+def get_context_copy_with_objects(context: bpy.types.Context, active_object: bpy.types.Object , objects: typing.Iterable[bpy.types.Object]) -> dict:
+    override = context.copy()
+    override['selectable_objects'] = list(objects)
+    override['selected_objects'] = list(objects)
+    override['selected_editable_objects'] = list(objects)
+    override['editable_objects'] = list(objects)
+    override['visible_objects'] = list(objects)
+    override['active_object'] = active_object
+    override['object'] = active_object
+    return override
+
+class Operator_Later_Caller:
+    
+    def execute(self, context):
+        raise NotImplementedError('This function needs to be overridden.')
+
+        # example
+        func = self.get_later_caller(bpy.ops, context.copy(), 'EXEC_DEFAULT', True, key_argument = 'key_argument')
+        bpy.app.timers.register(func)
+        return {'FINISHED'}
+    
+    @staticmethod
+    def get_later_caller(func, context: dict = None, execution_context: str = None, undo: bool = None, **key_arguments) -> typing.Callable:
+        
+        arguments = []
+        for argument in (context, execution_context, undo):
+            if argument == None:
+                continue
+            arguments.append(argument)
+   
+        def call_later() -> None:
+            func(*arguments, **key_arguments)
+            
+        return call_later
+
+
+VERTEX_CHANGING_MODIFIER_TYPES = {'ARRAY', 'BEVEL', 'BOOLEAN', 'BUILD', 'DECIMATE', 'EDGE_SPLIT', 'NODES', 'MASK', 'MIRROR', 'MULTIRES', 'REMESH', 'SCREW', 'SKIN', 'SOLIDIFY', 'SUBSURF', 'TRIANGULATE', 'VOLUME_TO_MESH', 'WELD', 'WIREFRAME', 'EXPLODE', 'FLUID', 'OCEAN', 'PARTICLE_INSTANCE'}
+
+class Object_Mode_Poll():
+    @classmethod
+    def poll(cls, context):
+        return context.space_data and context.space_data.type == 'VIEW_3D' and context.mode == 'OBJECT'
+
+
+def get_local_view_objects(context):
+    # Regression: object.local_view_get and object.visible_in_viewport_get() always returns False
+    # https://developer.blender.org/T95197
+
+    space_view_3d = context.space_data
+
+    if type(space_view_3d) != bpy.types.SpaceView3D: # will crash if space_view_3d is None
+        raise TypeError(f'The context is incorrect. For context.space_data expected a SpaceView3D type, not {type(space_view_3d)}')
+
+    depsgraph = context.evaluated_depsgraph_get()
+
+    if bpy.data.objects and hasattr(bpy.data.objects[0], 'visible_in_viewport_get'):
+        return [object for object in bpy.data.objects if object.evaluated_get(depsgraph).visible_in_viewport_get(space_view_3d)]
+    else:
+        return [object for object in bpy.data.objects if object.evaluated_get(depsgraph).local_view_get(space_view_3d)]

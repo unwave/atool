@@ -1,3 +1,7 @@
 Pillow
 xxhash
 beautifulsoup4
+validators
+pyperclip
+opencv-contrib-python-headless
+cached-property

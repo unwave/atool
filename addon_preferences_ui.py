@@ -1,15 +1,21 @@
-import bpy
 import threading
+
+import bpy
+
 from . import addon_updater_ops
+from . import bl_utils
+
+register = bl_utils.Register(globals())
+
 
 def update_library_path(self, context):
     asset_data = context.window_manager.at_asset_data
-    asset_data.library = self.library_path
+    asset_data.check_path(self.library_path, 'library')
     threading.Thread(target=asset_data.update_library, args=(context,), daemon=True).start()
 
 def update_auto_path(self, context):
     asset_data = context.window_manager.at_asset_data
-    asset_data.auto = self.auto_path
+    asset_data.check_path(self.auto_path, 'auto')
     threading.Thread(target=asset_data.update_auto, args=(context,), daemon=True).start()
 
 class ATOOL_PT_addon_preferences(bpy.types.AddonPreferences):
@@ -75,14 +81,8 @@ class ATOOL_OT_update_data_paths(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
  
     def execute(self, context):
-
+        
         asset_data = context.window_manager.at_asset_data
-
-        addon_preferences = context.preferences.addons[__package__].preferences
-
-        asset_data.library = addon_preferences.library_path
-        asset_data.auto = addon_preferences.auto_path
-
         threading.Thread(target=asset_data.update, args=(context,), daemon=True).start()
 
         return {"FINISHED"}

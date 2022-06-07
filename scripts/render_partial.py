@@ -18,7 +18,6 @@ render = bpy.context.scene.render
 cycles =  bpy.context.scene.cycles
 
 if cycles.device == 'GPU':
-    print(cycles.device == 'GPU')
     cycles_preferences = bpy.context.preferences.addons['cycles'].preferences
     cycles_preferences.compute_device_type = 'CUDA'
     for devices in cycles_preferences.get_devices():

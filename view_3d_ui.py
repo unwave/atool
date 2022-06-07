@@ -2,10 +2,11 @@ import bpy
 
 from . import utils
 from . import bl_utils
-from . import shader_editor_operator
+from . import node_utils
 from . import data
+from . import shader_editor_operator
 
-current_browser_asset_id = None
+register = bl_utils.Register(globals())
 
 
 class ATOOL_PT_search(bpy.types.Panel):
@@ -31,6 +32,42 @@ class ATOOL_PT_import_config(bpy.types.Panel):
         layout.alignment = 'LEFT'
         shader_editor_operator.draw_import_config(context, layout)
 
+
+class ATOOL_MT_asset(bpy.types.Menu):
+    bl_idname = "ATOOL_MT_asset"
+    bl_label = "Asset"
+
+    def draw(self, context):
+        layout = self.layout
+        
+        layout.operator("atool.open_info", icon='FILE_TEXT')
+        layout.operator("atool.icon_from_clipboard", icon='IMAGE_DATA')
+        layout.operator("atool.render_icon", icon='RESTRICT_RENDER_OFF')
+        layout.operator("atool.reload_asset", text='Reload', icon='FILE_REFRESH').do_reimport = False
+        layout.operator("atool.get_web_info", icon='INFO')
+        layout.operator("atool.reload_asset", text='Reimport', icon='IMPORT').do_reimport = True
+        
+        layout.separator()
+        layout.operator("atool.import_files", icon="SHADING_TEXTURE")
+        layout.operator("atool.get_web_asset", icon="URL")
+        layout.separator()
+        
+        layout.operator("atool.delete_file_cache")
+        layout.operator("atool.move_asset_to_desktop", icon='SCREEN_BACK')
+
+class ATOOL_MT_asset_library(bpy.types.Menu):
+    bl_idname = "ATOOL_MT_asset_library"
+    bl_label = "Library"
+
+    def draw(self, context):
+        layout = self.layout
+        
+        layout.operator("atool.process_auto", text = "Process Auto Folder", icon="NEWFOLDER")
+        layout.separator()
+        layout.operator("atool.reload_addon", text = "Reload Addon")
+        layout.separator()
+        layout.operator("atool.delete_all_file_caches")
+
 class ATOOL_MT_actions(bpy.types.Menu):
     bl_idname = "ATOOL_MT_actions"
     bl_label = "Actions"
@@ -38,23 +75,17 @@ class ATOOL_MT_actions(bpy.types.Menu):
     def draw(self, context):
         layout = self.layout
         info = context.window_manager.at_browser_asset_info
-        layout.prop(info, "is_shown", text = "Show Info")
-        layout.prop(info, "is_id_shown", text = "Show ID Info")
-        layout.operator("atool.open_info", icon='FILE_TEXT')
-        layout.separator()
-        layout.operator("atool.icon_from_clipboard", icon='IMAGE_DATA')
-        layout.operator("atool.render_icon", icon='RESTRICT_RENDER_OFF')
         
-        layout.operator("atool.reload_asset", text='Reload', icon='FILE_REFRESH').do_reimport = False
-        layout.operator("atool.get_web_info", icon='INFO')
-        layout.operator("atool.reload_asset", text='Reimport', icon='IMPORT').do_reimport = True
-        layout.operator("atool.move_asset_to_desktop", icon='SCREEN_BACK')
-        layout.separator()
-        layout.operator("atool.import_files", icon="SHADING_TEXTURE")
-        layout.operator("atool.process_auto", text = "Process Auto Folder", icon="NEWFOLDER")
-        layout.operator("atool.get_web_asset", icon="URL")
+        layout.menu('ATOOL_MT_asset')
+        layout.menu('ATOOL_MT_asset_library')
+        
         layout.separator()
         layout.popover("ATOOL_PT_import_config")
+        
+        layout.separator()
+        layout.prop(info, "is_shown", text = "Show Info")
+        layout.prop(info, "is_id_shown", text = "Show ID Info")
+        
         
 class ATOOL_MT_unreal(bpy.types.Menu):
     bl_idname = "ATOOL_MT_unreal"
@@ -67,8 +98,15 @@ class ATOOL_MT_unreal(bpy.types.Menu):
         layout.separator()
         layout.operator("atool.clear_custom_normals", icon="MOD_NORMALEDIT")
         layout.operator("atool.smooth_lowpoly", icon="MOD_SMOOTH")
-            
 
+register.property(
+    'current_browser_asset_id',
+    bpy.props.StringProperty(options = {'HIDDEN', 'SKIP_SAVE'})
+)
+register.property(
+    'import_button_icon',
+    bpy.props.StringProperty(default='NONE', options = {'HIDDEN', 'SKIP_SAVE'})
+)
 class ATOOL_PT_panel(bpy.types.Panel):
     bl_idname = "ATOOL_PT_panel"
     bl_label = "Load Asset"
@@ -79,7 +117,6 @@ class ATOOL_PT_panel(bpy.types.Panel):
 
     def draw(self, context):
 
-        global current_browser_asset_id
         wm = context.window_manager
         info = wm.at_browser_asset_info
         asset_data = wm.at_asset_data # type: data.AssetData
@@ -121,50 +158,56 @@ class ATOOL_PT_panel(bpy.types.Panel):
         side_buttons.operator("atool.render_icon", text='', icon='RESTRICT_RENDER_OFF')
         side_buttons.menu('ATOOL_MT_actions', text='', icon='DOWNARROW_HLT')
 
+        library_browser_asset_id = wm.at_asset_previews
+        if wm.current_browser_asset_id != library_browser_asset_id:
+            wm.current_browser_asset_id = library_browser_asset_id
+            
+            try:
+                asset = asset_data[library_browser_asset_id]
+
+                info["id"] = asset.id
+                info["name"] = asset.info.get("name", "")
+                info["url"] = asset.info.get("url", "")
+                info["author"] = asset.info.get("author", "")
+                info["author_url"] = asset.info.get("author_url", "")
+                info["licence"] = asset.info.get("licence", "")
+                info["licence_url"] = asset.info.get("licence_url", "")
+                info["description"] = asset.info.get("description", "")
+                info["tags"] = ' '.join(asset.info.get("tags", []))
+
+                dimensions = asset.info.get("dimensions", {})
+                info['x'] = dimensions.get("x", 1)
+                info['y'] = dimensions.get("y", 1)
+                info['z'] = dimensions.get("z", 0.1)
+                
+                if 'blend' in asset['system_tags']:
+                    wm.import_button_icon = 'BLENDER'
+                elif 'image' in asset['system_tags']:
+                    wm.import_button_icon = 'SHADING_TEXTURE'
+                else:
+                    wm.import_button_icon = 'GHOST_DISABLED'
+            except:
+                info["id"] = ""
+                info["name"] = ""
+                info["url"] = ""
+                info["author"] = ""
+                info["author_url"] = ""
+                info["licence"] = ""
+                info["licence_url"] = ""
+                info["description"] = ""
+                info["tags"] = ""
+                info['x'] = 1
+                info['y'] = 1
+                info['z'] = 0.1
+
+                # import traceback
+                # traceback.print_exc()
+
         column.separator()
-        column.operator("atool.import_asset")
+        column.operator("atool.import_asset", icon = wm.import_button_icon)
         column.separator()
 
         if info.is_shown:
-            library_browser_asset_id = wm.at_asset_previews
-            
-            if current_browser_asset_id != library_browser_asset_id:
-                current_browser_asset_id = library_browser_asset_id
-                
-                try:
-                    asset = asset_data[library_browser_asset_id]
-
-                    info["id"] = asset.id
-                    info["name"] = asset.info.get("name", "")
-                    info["url"] = asset.info.get("url", "")
-                    info["author"] = asset.info.get("author", "")
-                    info["author_url"] = asset.info.get("author_url", "")
-                    info["licence"] = asset.info.get("licence", "")
-                    info["licence_url"] = asset.info.get("licence_url", "")
-                    info["description"] = asset.info.get("description", "")
-                    info["tags"] = ' '.join(asset.info.get("tags", []))
-
-                    dimensions = asset.info.get("dimensions", {})
-                    info['x'] = dimensions.get("x", 1)
-                    info['y'] = dimensions.get("y", 1)
-                    info['z'] = dimensions.get("z", 0.1)
-                except:
-                    info["id"] = ""
-                    info["name"] = ""
-                    info["url"] = ""
-                    info["author"] = ""
-                    info["author_url"] = ""
-                    info["licence"] = ""
-                    info["licence_url"] = ""
-                    info["description"] = ""
-                    info["tags"] = ""
-                    info['x'] = 1
-                    info['y'] = 1
-                    info['z'] = 0.1
-
-                    # import traceback
-                    # traceback.print_exc()
-
             if info.is_id_shown:
                 row = column.row(align=True)
                 row.operator("atool.open_asset_folder", text='', icon = 'FILE_FOLDER', emboss=False)
@@ -235,6 +278,7 @@ class ATOOL_PT_save_asset(bpy.types.Panel):
         column.label(text=f"Name: {self.id.replace('_', ' ')}")
         column.label(text=f"Objects: {len(self.selected_objects)}")
         column.prop(self.info, "do_move_images", text=f"Include images: {len(self.used_images)}")
+        column.prop(self.info, "do_move_sub_assets")
 
         column.prop(self.info, "name", icon='SYNTAX_OFF', icon_only=True)
         column.prop(self.info, "tags", icon='FILTER', icon_only=True)
@@ -248,8 +292,6 @@ class ATOOL_PT_save_asset(bpy.types.Panel):
         row = column.row(align=True)
         row.prop(self.info, "licence", icon='COPY_ID', text="")
         row.prop(self.info, "licence_url", icon='LINKED', text="")
-
-        # column.prop(self.info, "do_move_sub_asset")
         
         column.operator("atool.move_to_library", text="Save")
 
@@ -270,8 +312,30 @@ class ATOOL_PT_save_asset(bpy.types.Panel):
             if not (object.data and hasattr(object.data, 'materials')):
                 continue
             for material in object.data.materials:
-                all_images.extend(bl_utils.get_all_images(material.node_tree))
+                if material:
+                    all_images.extend(node_utils.get_all_images(material.node_tree))
         return utils.deduplicate(all_images)
+
+
+class ATOOL_MT_others(bpy.types.Menu):
+    bl_idname = "ATOOL_MT_others"
+    bl_label = "Others"
+
+    def draw(self, context):
+        layout = self.layout
+        
+        layout.operator("atool.show_current_blend")
+        layout.operator('atool.cap_resolution')
+        layout.operator('atool.setup_adaptive_subdivision', icon = 'EXPERIMENTAL')
+        layout.operator('atool.import_sketchfab_zip_caller', icon = 'EXPERIMENTAL')
+        layout.operator('atool.copy_attribution', icon = 'EXPERIMENTAL')
+        layout.operator('atool.render_partial', icon = 'EXPERIMENTAL')
+    
+        layout.separator()
+        layout.menu('ATOOL_MT_unreal')
+        
+        layout.separator()
+        layout.operator("atool.split_blend_file")
 
 
 class ATOOL_PT_view_3d_tools(bpy.types.Panel):
@@ -285,37 +349,67 @@ class ATOOL_PT_view_3d_tools(bpy.types.Panel):
     def draw(self, context):
 
         column = self.layout.column()
+        column.label(text='Dependency', icon='OUTLINER')
         subcolumn = column.column(align=True)
-        subcolumn.operator("atool.os_open")
-        subcolumn.operator("atool.reload_library")
-        subcolumn.operator("atool.find_missing")
-        subcolumn.operator("atool.split_blend_file")
+        subcolumn.operator("atool.os_open", text = "Show")
+        subcolumn.operator("atool.reload_dependency", text = "Reload")
+        subcolumn.operator("atool.find_missing", text = "Find")
+        subcolumn.operator("atool.remap_paths", text = "Repath")
+        subcolumn.operator("atool.select_linked")
         column.separator()
         subcolumn = column.column(align=True)
-        subcolumn.operator("atool.distibute")
+        subcolumn.operator("atool.distribute")
         subcolumn.operator("atool.match_displacement")
         column.separator()
         column.operator("atool.dolly_zoom")
         column.operator("atool.unrotate")
-        column.operator("atool.arrage_by_materials")
+        column.operator("atool.arrange_by_materials")
+        column.operator("atool.replace_objects_with_active")
         column.separator()
-        column.menu('ATOOL_MT_unreal')
+        column.menu('ATOOL_MT_others')
+
+
+class ATOOL_PT_view_3d_fur_tools(bpy.types.Panel):
+    bl_idname = "ATOOL_PT_view_3d_fur_tools"
+    bl_label = "Fur Tools"
+    bl_category = "AT"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = "UI"
+    bl_context = "objectmode"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+
+        column = self.layout.column()
+        
+        column.operator("atool.add_fur")
+
         column.separator()
-        column.operator("atool.render_partial")
+        
+        column.operator("atool.show_all_particle_systems").show_viewport = True
+        column.operator("atool.show_all_particle_systems", text = 'Hide All').show_viewport = False
+        render = context.scene.render
 
-def update_ui():
-    global current_browser_asset_id
-    current_browser_asset_id = None
+        row = column.row(align = True)
+        row.prop(render, "use_simplify", text="")
 
-"""
-    https://docs.blender.org/api/current/bpy.types.UILayout.html?highlight=ui#bpy.types.UILayout.template_icon_view
-    javascript to remove icon names from https://docs.blender.org/api/current/bpy.types.UILayout.html
+        row = row.row(align = True)
+        row.active = render.use_simplify
+        row.prop(render, "simplify_child_particles", text="Child Particles")
 
-    var paragraphs = document.getElementsByTagName('p');
-    for (let paragraph of paragraphs) {
-        var result = paragraph.innerHTML.search("TRACKING_CLEAR_FORWARDS'");
-        if (result != -1){
-            paragraph.remove();
-        }
-    }
-"""
+        column.separator()
+
+        box = column.box().column(align=True)
+        object = context.object
+        if object:
+            if object.particle_systems:
+                for particle_system in object.particle_systems:
+                    row = box.row(align = True)
+                    row.label(text = str(particle_system.name))
+                    row.operator("atool.isolate_particle_system", text = 'Isolate').name = particle_system.name
+                    row.operator("atool.rename_particle_system", text = '', icon = 'FONT_DATA').name = particle_system.name
+            else:
+                row = box.row(align = True)
+                row.label(text = 'No Particle Systems')
+
+        column.operator("atool.render_view")

@@ -1,7 +1,13 @@
+import operator
+
 import bpy
+
 import pyperclip
 
-import operator
+from . import bl_utils
+
+register = bl_utils.Register(globals())
+
 
 class Shader_Editor_Poll():
     @classmethod
@@ -82,7 +88,7 @@ class ATOOL_PT_node_inspector(bpy.types.Panel):
             active_node = selected_nodes[0]
             row("name", active_node, "name")
             row("type", active_node, "type")
-            row("bl_idname:", active_node, "bl_idname")
+            row("bl_idname", active_node, "bl_idname")
             
             column.separator()
             for output in active_node.outputs:
@@ -148,15 +154,39 @@ class ATOOL_OT_iter_by_type(bpy.types.Operator, Shader_Editor_Poll):
         items.append((identifier, identifier[10:], ''))
     items = sorted(items, key=operator.itemgetter(0))
 
+    sample_current: bpy.props.BoolProperty(name='Sample Current', default=True)
+
     type: bpy.props.EnumProperty(
-                    name='Type',
-                    items=items,
-                    default='ShaderNodeBsdfPrincipled')
+                name='Type',
+                items=items,
+                default='ShaderNodeBsdfPrincipled')
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False
+
+        column = layout.column()
+        column.prop(self, 'sample_current')
+        column = layout.column()
+        column.prop(self, 'type')
+        column.enabled = not self.sample_current
 
     def execute(self, context):
+
+        if self.sample_current:
+
+            selected_nodes = context.selected_nodes
+            if not selected_nodes:
+                return {'FINISHED'}
+
+            type = context.selected_nodes[0].bl_idname
+        else:
+            type = self.type
+        
         
         nodes = bpy.context.space_data.edit_tree.nodes
-        nodes = [node for node in nodes if node.bl_idname == self.type]
+        nodes = [node for node in nodes if node.bl_idname == type]
 
         if not nodes:
             return {'FINISHED'}

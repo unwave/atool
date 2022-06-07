@@ -6,7 +6,7 @@ import os
 import sqlite3
 import typing
 
-import cv2 as cv
+
 import numpy as np
 from cached_property import cached_property
 from PIL import Image as pillow_image
@@ -14,19 +14,28 @@ from PIL import ImageGrab
 
 log = logging.getLogger("atool")
 
+OPENCV_IO_ENABLE_OPENEXR = False
 
-try:
+def set_OPENCV_IO_ENABLE_OPENEXR():
+    config = utils.read_local_file("config.json") # type: dict
+    if config and config.get("OPENCV_IO_ENABLE_OPENEXR"):
+        global OPENCV_IO_ENABLE_OPENEXR
+        OPENCV_IO_ENABLE_OPENEXR = True
+        os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
+
+if __package__:
+    import bpy
+    from . import utils
+    set_OPENCV_IO_ENABLE_OPENEXR()
     from . import type_definer
     from . imohashxx import hashfile
-except:
+else:
+    import utils
+    set_OPENCV_IO_ENABLE_OPENEXR()
     import type_definer
     from imohashxx import hashfile
 
-try:
-    import bpy
-except:
-    pass
-
+import cv2 as cv
 
 FILE_PATH = os.path.dirname(os.path.realpath(__file__))
 CASHE_PATH = os.path.join(FILE_PATH, "__cache__.db")
@@ -56,48 +65,113 @@ class Image_Cache_Database:
 CHANNEL_TO_INDEX = {'R': 0, 'G': 1, 'B': 2, 'A': 3}
 INDEX_TO_CHANNEL = ('R', 'G', 'B', 'A')
 DUMPABLE = ("x", "y", "channels", "min_max", "hash", "shape", "dtype", "aspect_ratio", "dominant_color")
+ONLY_DUMPABLE = ('basename', 'type')
 
 class Image:
     def __init__(self, path: str):
         self.path = path
-        self.name, self.extension = os.path.splitext(os.path.basename(path))
+        self.basename = os.path.basename(path)
+        self.name, self.extension = os.path.splitext(self.basename)
         self.extension = self.extension.lower()
 
-        self.data_block: object # bpy.types.Image
+        self.db: Image_Cache_Database = None
+        self.asset_info: dict = None
+        self.data_block: object = None # type: bpy.types.Image
+        self.type_definer_config: type_definer.Filter_Config = None
+
         self.type: typing.List[str] # what if type definer retruns all possible types in order of more probable?
-        self.min_max: typing.Dict[str, typing.Tuple[float, float]]
-        self.min_max = {}
-        self.dominant_color = {}
-        self.image: np.ndarray
-        self.dtype: str
-        self.hash: str
-        self.x: int
-        self.y: int
-        self.channels: int
         
+        self.hash: str # property, saved, key, called every time
+        
+        self.x: int # property, saved
+        self.y: int # property, saved
+        self.channels: int # property, saved
+        self.dtype: str # property, saved
+        
+        self.min_max: typing.Dict[str, typing.Tuple[float, float]] = {} # dict, saved
+        self.dominant_color = {} # dict, saved
+        
+        self.image: np.ndarray # property, not saved
 
     @classmethod
-    def from_block(cls, block, define_type = True):
-        image = cls(os.path.realpath(bpy.path.abspath(block.filepath, library=block.library)))
-        image.data_block = block
+    def from_db(cls, path: str, db: Image_Cache_Database = None, type_definer_config: type_definer.Filter_Config = None) -> Image:
+        image = cls(path)
+        
+        if type_definer_config:
+            image.type_definer_config = type_definer_config
 
-        type = block.get("at_type")
-        if not type:
-            if define_type:
-                type = type_definer.get_type(image.name)
-            else:
-                type = ['None']
-        image.type = type
-        block["at_type"] = type
+        if db:
+            image.db = db
+            image.load_from_db(db)
+        else:
+            with Image_Cache_Database() as db:
+                image.load_from_db(db)
 
         return image
+    
+    def load_from_db(self, db: Image_Cache_Database):
+            info = db.get((self.hash,))
+            if info:
+                self.load(info[0])
+
+    @classmethod
+    def from_asset_info(cls, path: str, info: dict, type_definer_config: type_definer.Filter_Config = None) -> Image:
+        image = cls(path)
         
+        if type_definer_config:
+            image.type_definer_config = type_definer_config
+        
+        image.load_from_asset_info(info)
+        return image
+    
+    def load_from_asset_info(self, info: dict):
+        self.asset_info = info
+        file_info = info.get('file_info') # type: dict
+        if file_info:
+            image_info = file_info.get(self.hash)
+            if image_info:
+                self.load(image_info)
+
+    def update_source(self):
+        try:
+            if self.db:
+                self.db.set(self.hash, self.dump())
+        except:
+            print(f'The Image_Cache_Database for image {self.path} was not updated.')
+
+        if self.asset_info:
+            file_info = self.asset_info.get('file_info') # type: dict
+            if not file_info:
+                self.asset_info['file_info'] = {}
+            self.asset_info['file_info'][self.hash] = self.dump()     
+
+        if self.data_block:
+            self.data_block['at_type'] = self.type
+
+    @classmethod
+    def from_block(cls, block, define_type = True, type_definer_config: type_definer.Filter_Config = None) -> Image:
+        image = cls(os.path.realpath(bpy.path.abspath(block.filepath, library=block.library)))
+        image.data_block = block
+        
+        if type_definer_config:
+            image.type_definer_config = type_definer_config
+
+        type = block.get("at_type")
+        if type:
+            image.type = type
+
+        return image
+    
     def __repr__(self):
-        return "<Image " + self.path + ">"
+        return f"<atool.image_utils.Image object; <{self.path}>"
+
+    @cached_property
+    def type(self):
+        return type_definer.get_type(self.name, self.type_definer_config)
         
     @cached_property
     def hash(self):
-        return hashfile(self.path, hexdigest=True)
+        return utils.get_file_hash(self.path)
 
     @cached_property
     def image(self):
@@ -111,16 +185,23 @@ class Image:
                     image = cv.cvtColor(image, cv.COLOR_RGBA2BGRA)
         else:
             image = cv.imread(self.path, cv.IMREAD_UNCHANGED | cv.IMREAD_ANYCOLOR | cv.IMREAD_ANYDEPTH)
-
-            if self.extension in (".exr",): # bad
-                for channel in reversed(cv.split(image)): # what if all channels?
-                    if channel.any():
-                        image = channel
         
+        if self.extension == '.exr': # what if zeros are what i need?
+            image = cv.merge([channel for channel in cv.split(image) if channel.any()])
+    
         assert image is not None, f"The image {self.path} wasn't loaded!"
         log.debug(f"Image loaded: {self.path}")
 
         return image
+    
+    def trim_type(self):
+        if self.channels > 3:
+            return
+        
+        if len(self.type) == 4 or (len(self.type) == 2 and self.type[0] in type_definer.TRIPLE_CHANNEL_MAPS):
+            init_type = self.type.copy()
+            self.type.pop(0)
+            print(f'The image {self.path} had a wrong type and was trimmed from {init_type} to {self.type}.')
     
     @cached_property
     def shape(self):
@@ -163,44 +244,27 @@ class Image:
     def aspect_ratio(self):
         return self.shape[0]/self.shape[1]
         
-    def process(self,  file_info: dict = None, db: Image_Cache_Database = None, no_height = False):
-        assert not(file_info == None and db == None)
-
-        hash = self.hash
-
-        if file_info is not None:
-            info = file_info.get(hash)
-            if info:
-                self.load(info)
-                log.debug(f"Info for {self.path} has been read from the asset info.")
-        else:
-            if db:
-                info = db.get((hash,))
-                if info:
-                    self.load(info[0])
-                    log.debug(f"Info for {self.path} has been read from the database cache.")
-
+    def pre_process(self, no_height = False):
 
         self.aspect_ratio
+        self.trim_type()
 
         for channel, subtype in self.iter_type():
 
             if subtype in {"diffuse", "albedo", "roughness", "gloss", "metallic"}:
-                if not self.dominant_color.get(channel):
-                    self.dominant_color[channel] = self.get_dominant_color(channel)
+                self.get_dominant_color(channel)
 
             # normalize if: height, roughness, gloss, specular
             if subtype in {"displacement", "roughness", "gloss", "specular"}:
-                if not self.min_max.get(channel):
-                    self.min_max[channel] = self.get_min_max(channel)
+                self.get_min_max(channel)
 
             # delight?
             # valid color range for PBR
             # normalize if out of range
             # if no height use color and normalize it
             if subtype in {"diffuse", "albedo"}:
-                if no_height and not self.min_max.get(channel):
-                    self.min_max[channel] = self.get_min_max(channel)
+                if no_height:
+                    self.get_min_max(channel)
 
             # check if normal map is correct
             # auto-detect normals Y channel style, DirectX/OpenGL
@@ -210,18 +274,8 @@ class Image:
             if subtype == "normal":
                 pass
 
-        
-        if file_info is not None:
-            if not file_info.get(hash):
-                file_info[hash] = {}
-            file_info[hash].update(self.dump())
-        else:
-            if db:
-                db.set(self.hash, self.dump())
-
-
     def iter_type(self):
-        assert self.type, "Image type is not defined."
+        # assert self.type, "Image type is not defined."
         type_len = len(self.type)
         for index, subtype in enumerate(self.type):
             if type_len == 1: # RGB
@@ -263,9 +317,13 @@ class Image:
         return image
 
 
-    def get_dominant_color(self, channel: str):
-        log.debug(f"Getting dominant color for channel: {channel}")
-
+    def get_dominant_color(self, channel: str):  
+        dominant_color = self.dominant_color.get(channel)
+        if dominant_color:
+            return dominant_color
+        
+        log.debug(f"Computing dominant color for channel: {channel}")
+            
         image = self.get_channel(channel, self.resized(256))
         channels = self.get_shape(image)[2]
         image = image.reshape((-1,channels))
@@ -273,10 +331,14 @@ class Image:
         criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 10, 1.0)
         result = cv.kmeans(image, 1, None, criteria, 10, cv.KMEANS_RANDOM_CENTERS)
         center = result[2][0].astype(float)
+        
         if channels > 1:
-            return list(self.to_float(center[::-1]))
+            dominant_color = list(self.to_float(center[::-1]))
         else:
-            return list(self.to_float(center.repeat(3)))
+            dominant_color = list(self.to_float(center.repeat(3)))
+            
+        self.dominant_color[channel] = dominant_color
+        return dominant_color
 
 
     def get_grayscaled(self, image = None) -> np.ndarray:
@@ -294,21 +356,29 @@ class Image:
         return image
 
 
-    def get_min_max(self, channel: str):
-        log.debug(f"Getting min max for channel: {channel}")
+    def get_min_max(self, channel: str) -> typing.Tuple[float, float]:
+        min_max = self.min_max.get(channel)
+        if min_max:
+            return min_max
+        
+        log.debug(f"Computing min max for channel: {channel}")
 
         image = self.get_channel(channel)
         channels = self.get_shape(image)[2]
         if channels > 1:
             image = self.get_grayscaled(image)
+        
         min_val, max_val, min_loc, max_loc = cv.minMaxLoc(image)
-        return self.to_float(min_val), self.to_float(max_val)
+        
+        min_max = self.to_float(min_val), self.to_float(max_val)
+        self.min_max[channel] = min_max
+        return min_max
         
 
     # https://numpy.org/doc/stable/user/basics.types.html
     # https://numpy.org/doc/stable/reference/generated/numpy.finfo.html
     # https://numpy.org/doc/stable/reference/generated/numpy.iinfo.html
-    def to_float(self, array):
+    def to_float(self, array: typing.Union[np.ndarray, float]) -> typing.Union[np.ndarray, float]:
         if self.dtype.startswith('float'):
             result = array
         elif self.dtype == 'uint8':
@@ -332,7 +402,7 @@ class Image:
                 setattr(self, key, value)
 
     def dump(self):
-        data = {key: getattr(self, key) for key in DUMPABLE}
+        data = {key: getattr(self, key) for key in DUMPABLE + ONLY_DUMPABLE}
         return data
 
             
@@ -377,8 +447,6 @@ class Image:
         if not os.path.exists(new_image_path):
             image = self.to_uint8()
             cv.imwrite(new_image_path, image)
-
-
 
 def save_as_icon(image: pillow_image.Image, path):
     x, y = image.size

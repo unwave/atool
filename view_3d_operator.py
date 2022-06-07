@@ -15,53 +15,47 @@ import bpy
 import bmesh
 import mathutils
 
-from . import image_utils
-from . import type_definer
-from . import data
-from . import shader_editor_operator
 from . import utils
 from . import bl_utils
+from . import node_utils
+from . import image_utils
+from . import type_definer
+
+from . import data
+from . import shader_editor_operator
+
 
 # import webbrowser
 # import numpy
 # import uuid
 
+register = bl_utils.Register(globals())
 
 class Object_Mode_Poll():
     @classmethod
     def poll(cls, context):
-        return context.space_data.type == 'VIEW_3D' and context.mode == 'OBJECT'
+        return context.space_data and context.space_data.type == 'VIEW_3D' and context.mode == 'OBJECT'
 
-
-def get_linked_objects_from_selected(operator, context):
-
-        report = operator.report
-        selected_objects = context.selected_objects
-
-        if not selected_objects:
-            report({'INFO'}, "Nothing is selected. Select a linked object.")
-            return []
-
-        objects_with_data = [object for object in selected_objects if object.data]
-
-        if not objects_with_data:
-            report({'INFO'}, "No objects with data.")
-            return []
-
-        linked_objects = [object for object in objects_with_data if object.data.library]
-
-        if not linked_objects:
-            report({'INFO'}, "No linked objects.")
-            return []
-
-        return linked_objects
 
 def get_unique_libraries_from_selected_objects(operator, context):
 
-    linked_objects = get_linked_objects_from_selected(operator, context)
-    return list({object.data.library for object in linked_objects})
-    
+    report = operator.report
+    selected_objects = context.selected_objects
+    if not selected_objects:
+        report({'INFO'}, "Nothing is selected. Select an object with a library dependency.")
+        return []
 
+    libraries = {l for l in bpy.data.libraries}
+    dependencies = bl_utils.Dependency_Getter()
+
+    libraries_to_reload = []
+    for object in selected_objects:
+        for dependency in dependencies.get_object_dependencies_by_type(object, type = ('Library',)):
+            if dependency in libraries:
+                libraries_to_reload.append(dependency)
+
+    return utils.deduplicate(libraries_to_reload)
+    
 def get_asset_data_and_id(operator: bpy.types.Operator, context: bpy.types.Context) -> typing.Tuple[data.AssetData, str]:
 
     asset_data = context.window_manager.at_asset_data # type: data.AssetData
@@ -90,43 +84,71 @@ def get_current_browser_asset(operator: bpy.types.Operator, context: bpy.types.C
     return asset
 
 
-class ATOOL_OT_open_library_in_file_browser(bpy.types.Operator, Object_Mode_Poll):
+class ATOOL_OT_os_open(bpy.types.Operator, Object_Mode_Poll):
     bl_idname = "atool.os_open"
     bl_label = "Open File Browser"
-    bl_description = "Open the selected objects libraries in a file browser"
+    bl_description = "Open the selected objects dependencies in a file browser"
 
     def execute(self, context):
 
-        files = []
+        selected_objects = context.selected_objects
+        if not selected_objects:
+            self.report({'INFO'}, "Nothing is selected.")
+            return {'CANCELLED'}
 
-        for library in get_unique_libraries_from_selected_objects(self, context):
-            file_dir = os.path.realpath(bpy.path.abspath(library.filepath))
-            files.append(file_dir)
-        
-        if files:
-            threading.Thread(target=utils.os_show, args=(self, files,)).start()
+        dependencies = bl_utils.Dependency_Getter()
+        filepaths = []
+
+        for object in selected_objects:
+            for dependency in dependencies.get_object_dependencies_by_type(object):
+                filepath = bl_utils.get_block_abspath(dependency)
+                if not os.path.exists(filepath):
+                    continue
+                filepaths.append(filepath)
+
+        if not filepaths:
+            self.report({'INFO'}, "No dependencies or files does not exist.")
+            return {'CANCELLED'}
+
+        filepaths = utils.deduplicate(filepaths)
+        threading.Thread(target=utils.os_show, args=(self, filepaths,)).start()
         
         return {'FINISHED'}
 
 
-class ATOOL_OT_reload_library(bpy.types.Operator, Object_Mode_Poll):
-    bl_idname = "atool.reload_library"
-    bl_label = "Reload Library"
-    bl_description = "Reload the selected objects libraries"
-    bl_options = {'REGISTER', 'UNDO'}
+class ATOOL_OT_reload_dependency(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.reload_dependency"
+    bl_label = "Reload Dependency"
+    bl_description = "Reload the selected objects dependencies"
 
     def execute(self, context):
 
-        libraries_to_reload = get_unique_libraries_from_selected_objects(self, context)
-
-        # test it because it seems you cannot undo a library reload
-        # https://docs.blender.org/api/current/bpy.types.Operator.html#bpy.types.Operator.execute
-        if not libraries_to_reload:
+        selected_objects = context.selected_objects
+        if not selected_objects:
+            self.report({'INFO'}, "Nothing is selected. Select an object with a dependency.")
             return {'CANCELLED'}
-        
-        for library in libraries_to_reload:
-            library.reload()
-            self.report({'INFO'}, f"{library.name} has been reloaded.")
+
+        local_dependencies = set(bpy.data.libraries)
+        local_dependencies |= set(bpy.data.images)
+        dependencies = bl_utils.Dependency_Getter()
+
+        dependencies_to_reload = [] 
+        for object in selected_objects:
+            for dependency in dependencies.get_object_dependencies_by_type(object):
+                if dependency in local_dependencies: # is needed?
+                    dependencies_to_reload.append(dependency)
+
+        if not dependencies_to_reload:
+            self.report({'INFO'}, "No dependency found.")
+            return {'CANCELLED'}
+
+        dependencies_to_reload = utils.deduplicate(dependencies_to_reload)
+        # may be just remove images that belongs to libraries but need to test first
+        dependencies_to_reload = [bl_utils.Reference(dependency) for dependency in dependencies_to_reload] # type: typing.List[bl_utils.Reference]
+        for dependency in dependencies_to_reload:
+            dependency = dependency.get()
+            dependency.reload()
+            self.report({'INFO'}, f"{dependency.name} has been reloaded.")
         
         return {'FINISHED'}
 
@@ -208,6 +230,7 @@ class ATOOL_OT_move_to_library(bpy.types.Operator, Object_Mode_Poll):
         info["licence"] = template_info.licence
         info["licence_url"] = template_info.licence_url
         info['do_move_images'] = template_info.do_move_images
+        info['do_move_sub_assets'] = template_info.do_move_sub_assets
 
         self.process = threading.Thread(target=asset_data.add_to_library, args=(context, objects, info))
         self.process.start()
@@ -249,43 +272,131 @@ class Blend_Import:
         description="Do not import asset that starts with the string", 
         default = "#"
         )
+    
+    # only_as_collections: bpy.props.BoolProperty(
+    #     name="As Collections", 
+    #     description="Only link instanced collections", 
+    #     default= True
+    #     )
+    
+    move_to_cursor: bpy.props.BoolProperty(
+        name="Move To Cursor", 
+        description="Move objects to the 3d cursor", 
+        default= True
+        )
+    
+    as_drag_and_drop: bpy.props.BoolProperty(
+        name="As Blend Drop", 
+        description="Import as a blend drop", 
+        default = False
+        )
+    
+    delete_unused_links: bpy.props.BoolProperty(
+        name="Clear Unused Liked IDs", 
+        description="Deletes all unused links of the imported blend file. Use this when the append gives you a linked object as it was linked before", 
+        default = True
+        )
 
-    def draw_blend_import(self, layout):
-        layout.prop(self, "link")
-        layout.prop(self, "ignore")
+    def draw_blend_import(self, layout: bpy.types.UILayout):
+        if not self.as_drag_and_drop:
+            box = layout.box().column(align=True)
+            box.prop(self, "link")
+            # if self.link:
+                # box.prop(self, "only_as_collections")
+            box.prop(self, "move_to_cursor")
+            box.prop(self, "ignore")
+        layout.separator()
+        
+        layout.prop(self, "delete_unused_links")
+        layout.separator()
+        
+        box = layout.box().column(align=True)
+        box.prop(self, "as_drag_and_drop")
+        if self.as_drag_and_drop:
+            box.operator("wm.link", text="Link", icon='LINK_BLEND').filepath = self.blend
+            box.operator("wm.append", text="Append", icon='APPEND_BLEND').filepath = self.blend
+    
+    @property        
+    def library(self):
+        if self._library:
+            return self._library.get()
+        
+    @library.setter
+    def library(self, library: bpy.types.Library):
+        self._library = bl_utils.Reference(library)
 
     def import_blend(self, context):
+        self._library: bl_utils.Reference = None
+        self.was_library_linked_before = None
+        
+        if self.as_drag_and_drop:
+            
+            library = bl_utils.get_library_by_path(self.blend)
+            if library:
+                if not library.users_id:
+                    bpy.data.libraries.remove(library)
+                else:
+                    if self.delete_unused_links:
+                        to_clear = []
+                        for id in library.users_id:
+                            if id.library == library:
+                                users = id.users
+                                if not users or users == 1 or users == 2 and id.use_fake_user:
+                                    to_clear.append(id)
+                        bpy.data.batch_remove(to_clear)
+            
+            if self.is_repeat():
+                if self.was_library_linked_before == False and self.library:
+                    bpy.data.libraries.remove(self.library)
+                
+            return {'FINISHED'}
+        
         self.blend: str
         self.atool_id: str
+        self.pre_load_libraries = set(bpy.data.libraries)
 
         with bpy.data.libraries.load(self.blend, link = self.link) as (data_from, data_to):
             data_to.collections = data_from.collections
             data_to.objects = data_from.objects
-            
-        imported_library = None
-        for library in bpy.data.libraries:
-            if library.filepath == self.blend:
-                imported_library = library
-                if not (data_to.collections or data_to.objects):
-                    self.report({'INFO'}, "Nothing to import from the blend file.")
-                    bpy.data.libraries.remove(library)
-                    return {'FINISHED'}
-                library_version = library.version
-                if library_version < (2,80,0):
-                    report = "2.79- blend file."
-                    if data_to.collections:
-                        report += f" {len(data_to.collections)} groups are imported as collections."
-                    self.report({'INFO'}, report)
+            # if not self.only_as_collections:
+                # data_to.objects = data_from.objects
+
+        library = bl_utils.get_library_by_path(self.blend)
         
+        self.library = library
+        self.was_library_linked_before = False
+        if library in self.pre_load_libraries:
+            self.was_library_linked_before = True
+
+        if not (data_to.collections or data_to.objects):
+            self.report({'INFO'}, "Nothing to import from the blend file.")
+            if not self.was_library_linked_before:
+                bpy.data.libraries.remove(library)
+            return {'FINISHED'}
+
+        library_version = library.version
+        if library_version < (2,80,0):
+            report = "2.79- blend file."
+            if data_to.collections:
+                report += f" {len(data_to.collections)} groups are imported as collections."
+            self.report({'INFO'}, report)
+            
+        def import_objects_and_collections():
+            pass
+
         objects = []
+        objects_to_remove = []
         for object in data_to.objects:
             if self.ignore and object.name.startswith(self.ignore):
-                bpy.data.objects.remove(object)
+                objects_to_remove.append(object)
             else:
                 objects.append(object)
+        if objects_to_remove:
+            bpy.data.batch_remove(objects_to_remove)
 
         imported = {}
         final_objects = []
+        context_collection_objects =  set(context.collection.objects)
 
         def add_object(object, collection):
             object["atool_id"] = self.atool_id
@@ -295,19 +406,25 @@ class Blend_Import:
                 if imported_object:
                     return imported_object
 
-                object_overried = object.override_create(remap_local_usages=False)
-                object_overried["atool_id"] = self.atool_id
-                collection.objects.link(object_overried)
-                object_overried.select_set(True)
+                object_override = object.override_create(remap_local_usages=False)
+                object_override["atool_id"] = self.atool_id
+                collection.objects.link(object_override)
+                object_override.select_set(True)
 
-                imported[(object.name, object.library)] = object_overried
-                return object_overried
+                imported[(object.name, object.library)] = object_override
+                return object_override
             else:
-                collection.objects.link(object)
+                # if already linked there is a blender problem with appending
+                # object = object.copy() # only copies the object, not it's sub ids
+                # object = object.make_local(clear_proxy = False)
+                # bpy.ops.object.make_local(type='SELECT_OBJECT')
+                # bpy.ops.object.make_single_user(type='SELECTED_OBJECTS', object=False, obdata=False, material=False, animation=False)
+                if not object in context_collection_objects:
+                    collection.objects.link(object)
                 object.select_set(True)
                 return object
 
-        collection_objects = []
+        collection_objects = set()
         for collection in data_to.collections:
 
             if self.ignore and collection.name.startswith(self.ignore):
@@ -321,13 +438,19 @@ class Blend_Import:
             context.scene.collection.children.link(new_collection)
 
             for object in collection.all_objects:
-                collection_objects.append(object)
+                collection_objects.add(object)
                 final_objects.append(add_object(object, new_collection))
-    
+        
         for object in objects:
             if object in collection_objects:
                 continue
             final_objects.append(add_object(object, context.collection))
+        
+        if self.move_to_cursor:
+            cursor_location = context.scene.cursor.location
+            for object in set(final_objects):
+                if not object.parent:
+                    object.matrix_world.translation += cursor_location
 
         if not self.link:
             return {'FINISHED'}
@@ -335,15 +458,22 @@ class Blend_Import:
         imported_objects = {object.name: object for object in final_objects}
 
         for object in imported_objects.values():
+            
             object.use_fake_user = False
+            
             parent = object.parent
-            if parent and parent.library == imported_library:
+            if parent and parent.library == library:
                 object.parent = imported_objects.get(parent.name)
+        
+            modifiers = [modifier for modifier in object.modifiers if modifier.type == 'ARMATURE']
+            if modifiers:
+                for modifier in modifiers:
+                    modifier.object = imported_objects.get(modifier.object.name)
 
         return {'FINISHED'}
 
 
-class ATOOL_OT_import_asset(bpy.types.Operator, Object_Mode_Poll, shader_editor_operator.Material_Import_Properties, Blend_Import):
+class ATOOL_OT_import_asset(bpy.types.Operator, Object_Mode_Poll, shader_editor_operator.Modal_Material_Import, Blend_Import):
     bl_idname = "atool.import_asset"
     bl_label = "Import"
     bl_description = "Import asset"
@@ -362,105 +492,47 @@ class ATOOL_OT_import_asset(bpy.types.Operator, Object_Mode_Poll, shader_editor_
             self.draw_blend_import(layout)
 
     def invoke(self, context, event):
-
-        self.asset_type = None
-
+        
         asset = get_current_browser_asset(self, context)
         if not asset:
             return {'CANCELLED'}
+        
+        self.asset_type = None
         self.asset = asset
-        self.atool_id = asset.id
-
-        blends = [file.path for file in os.scandir(asset.path) if file.path.endswith(".blend")]
-        if blends:
-            self.blend = max(blends, key=os.path.getmtime)
+        
+        if asset.is_blend:
             self.asset_type = 'blend'
+            self.blend = asset.blend
+            self.atool_id = asset.id
             return self.execute(context)
 
-        images = asset.get_imags()
-        if images:
-
-            self.object = None
-            self.material = None
-
+        image_paths = asset.get_images()
+        if image_paths:
+            self.asset_type = 'material'
+            
+            self.image_paths = image_paths
+            self.set_asset(asset)
+            
             object = context.object
             if object:
-                self.object = bl_utils.Reference(object)
+                self.set_object(object)
                 material = object.active_material
                 if material:
-                    self.material = bl_utils.Reference(material)
-
-            self.asset_type = 'material'
-
-            info = self.asset.info
-
-            self.dimensions = {'x': 1, 'y': 1, 'z': 0.1}
-            self.dimensions.update(info["dimensions"])
-
-            self.asset_name = info.get("name")
-
-            config = shader_editor_operator.get_definer_config(context)
+                    self.set_material(material)
             
-            self.queue = queue.Queue()
-            config["queue"] = self.queue
-            config["asset"] = self.asset
-
-            self.process = threading.Thread(target=type_definer.define, args=(images, config))
-            self.process.start()
-
-            wm = context.window_manager
-            self._timer = wm.event_timer_add(0.1, window=context.window)
-            wm.modal_handler_add(self)
+            self.start_images_preload(context)
             return {'RUNNING_MODAL'}
             
         self.report({'INFO'}, "Nothing to import.")
-        return {'CANCELLED'}
-
-    def modal(self, context, event):
-
-        if event.type != 'TIMER' or self.process.is_alive():
-            return {'PASS_THROUGH'}
-
-        self.process.join()
-
-        try:
-            result = self.queue.get(block=False)[0]
-        except:
-            self.report({"ERROR"}, "The type definer failed. See the console for the error.")
-            return {'CANCELLED'}
-
-        for report in result["report"]:
-            self.report(*report)
-
-        if not result["ok"]:
-            return {'FINISHED'}
-
-        self.images = result["images"]
-        self.material_name = result["material_name"]
-
-        return self.execute(context)
-                
+        return {'CANCELLED'} 
 
     def execute(self, context):
-
         if self.asset_type == 'blend':
             return self.import_blend(context)
-
+        
         assert self.asset_type == 'material'
-
-        for image in self.images:
-            image.data_block = bpy.data.images.load(filepath = image.path, check_existing=True)
-            image.set_bl_props(image.data_block)
-
-        object = None
-        material = None
-
-        if self.object:
-            object = self.object.get()
-        if self.material:
-            material = self.material.get()
-
-        return shader_editor_operator.apply_material(self, context, object, material)
+        return self.apply_material(context)
+        
 
 
 class ATOOL_OT_extract_zips(bpy.types.Operator, Object_Mode_Poll):
@@ -479,7 +551,7 @@ class ATOOL_OT_extract_zips(bpy.types.Operator, Object_Mode_Poll):
             self.report({'INFO'}, "No zip files to extract.")
             return {'CANCELLED'}
 
-        self.report({'INFO'}, "The zip files have beed extracted.")
+        self.report({'INFO'}, "The zip files have been extracted.")
         return {'FINISHED'}
         
 
@@ -511,19 +583,46 @@ class ATOOL_OT_pin_active_asset(bpy.types.Operator, Object_Mode_Poll):
 
     def execute(self, context):
 
-        asset = context.object
-        if not asset:
-            self.report({'INFO'}, "No active object.")
+        asset_data = context.window_manager.at_asset_data # type: data.AssetData
+        if not asset_data:
+            self.report({'INFO'}, "The library is empty.")
             return {'CANCELLED'}
 
-        id = asset.get("atool_id")
-        if not id:
-            self.report({'INFO'}, "The active object is not an asset.")
+        selected_objects = context.selected_objects # type: typing.List[bpy.types.Object]
+        if not selected_objects:
+            self.report({'INFO'}, "No object selected.")
             return {'CANCELLED'}
 
-        context.window_manager.at_search = "id:" + id
+        objects = asset_data.get_assets_from_objects(selected_objects)
+        if not objects:
+            self.report({'INFO'}, "No assets selected.")
+            return {'CANCELLED'}
+
+        active_object = context.object
+        active_id = None
+        for object, assets in objects.items():
+            if object == active_object:
+                active_id = assets[0].id
+                break
+
+        if not active_id:
+            active_id = list(objects.items())[0][1][0].id
+
+        assets = [asset for assets in objects.values() for asset in assets]
+        assets = utils.deduplicate(assets)
+
+        query = ''
+        for asset in assets:
+            if " " in asset.id:
+                query += f'id:"{asset.id}" '  
+            else:
+                query += f'id:{asset.id} '
+
+        context.window_manager.at_search = query
+        context.window_manager.at_asset_previews = active_id
 
         return {'FINISHED'}
+
 
 
 class ATOOL_OT_open_attr(bpy.types.Operator, Object_Mode_Poll):
@@ -659,115 +758,6 @@ class ATOOL_OT_reload_asset(bpy.types.Operator, Object_Mode_Poll):
         return {'FINISHED'}
 
 
-class temp_image:
-    def __init__(self, x, y):
-        self.width = x
-        self.height = y
-        
-    def __enter__(self):
-        import uuid
-        self.image = bpy.data.images.new(str(uuid.uuid1()), width=self.width, height=self.height, float_buffer=True, is_data=True)
-        return self.image
-    
-    def __exit__(self, type, value, traceback):
-        bpy.data.images.remove(self.image)
-           
-class uv_override:
-    def __init__(self, material, uv_image):
-        self.material = material
-        self.uv_image = uv_image
-        
-    def __enter__(self):
-        
-        def get_node_trees(starting_node_tree, node_trees = None):
-            if node_trees == None:
-                node_trees = set()
-            node_trees.add(starting_node_tree)
-            for node in starting_node_tree.nodes:
-                if node.type == 'GROUP' and node.node_tree != None:
-                    get_node_trees(node.node_tree, node_trees)
-            return node_trees
-        
-        node_trees = list(get_node_trees(self.material.node_tree))
-        
-        self.initial_links = {node_tree: [] for node_tree in node_trees}
-        self.temp_nodes = {node_tree: [] for node_tree in node_trees}
-        
-        for node_tree in node_trees:
-            nodes = node_tree.nodes
-            links = node_tree.links
-            
-            uv_image_node = nodes.new('ShaderNodeTexImage')
-            uv_image_node.image = self.uv_image
-            uv_image_node.interpolation = 'Closest'
-            
-            self.temp_nodes[node_tree].append(uv_image_node)
-            uv_output = uv_image_node.outputs[0]
-            
-            for link in links:
-                node_type = link.from_node.type
-                if node_type == "UVMAP":
-                    self.initial_links[node_tree].append((link.from_socket, link.to_socket))
-                    links.new(uv_output, link.to_socket)
-                elif node_type == "TEX_COORD" and link.from_socket.name == "UV":
-                    self.initial_links[node_tree].append((link.from_socket, link.to_socket))
-                    links.new(uv_output, link.to_socket)
-            
-            for node in [node for node in nodes if node.type == "TEX_IMAGE" and node != uv_image_node and not node.inputs[0].links]:
-                links.new(uv_output, node.inputs[0])
-        
-    
-    def __exit__(self, type, value, traceback):
-        for node_tree, initial_links in self.initial_links.items():
-            links = node_tree.links
-            for link in initial_links:
-                links.new(link[0], link[1])
-                
-        for node_tree, temp_nodes in self.temp_nodes.items():
-            nodes = node_tree.nodes
-            for temp_node in temp_nodes:
-                nodes.remove(temp_node)
-                
-class baking_image_node:
-    def __init__(self, material, image):
-        self.nodes = material.node_tree.nodes
-        self.image = image
-        
-    def __enter__(self):
-        image_node = self.nodes.new('ShaderNodeTexImage')
-        image_node.image = self.image
-        image_node.select = True
-        self.initial_active_node = self.nodes.active
-        self.nodes.active = image_node
-        self.image_node = image_node
-    
-    def __exit__(self, type, value, traceback):
-        self.nodes.remove(self.image_node)
-        self.nodes.active = self.initial_active_node
-
-class output_override:
-    def __init__(self, material, material_output, traget_socket_output):
-        self.nodes = material.node_tree.nodes
-        self.links = material.node_tree.links
-        self.material_output = material_output
-        self.traget_socket_output = traget_socket_output
-        
-    def __enter__(self):
-        if self.material_output.inputs[0].links:
-            self.material_output_initial_socket_input = self.material_output.inputs[0].links[0].from_socket
-        else:
-            self.material_output_initial_socket_input = None
-
-        self.emission_node = self.nodes.new('ShaderNodeEmission')
-        
-        self.links.new(self.traget_socket_output, self.emission_node.inputs[0])
-        self.links.new(self.emission_node.outputs[0], self.material_output.inputs[0])
-    
-    def __exit__(self, type, value, traceback):
-        self.nodes.remove(self.emission_node)
-        if self.material_output_initial_socket_input:
-            self.links.new(self.material_output_initial_socket_input, self.material_output.inputs[0])
-
 class ATOOL_OT_match_displacement(bpy.types.Operator, Object_Mode_Poll):
     bl_idname = "atool.match_displacement"
     bl_label = "Match Displacement"
@@ -777,186 +767,289 @@ class ATOOL_OT_match_displacement(bpy.types.Operator, Object_Mode_Poll):
     random_rotation: bpy.props.BoolProperty(name = "Random Rotation", default = True)
 
     def execute(self, context):
-        start = datetime.now()
-
+        self.context = context
         selected_objects = context.selected_objects
-        initial_active_object = context.object
 
         if not selected_objects:
             self.report({'INFO'}, "No selected objects.")
             return {'CANCELLED'}
 
-        context.scene.frame_set(1)
-
-        bpy.ops.mesh.primitive_plane_add(location=(0.0, 0.0, -100))
-        bake_plane = context.object
-        bake_plane.name = "__bake_plane__"
-
+        jobs = []
         for object in selected_objects:
 
             if object.type != 'MESH':
                 self.report({'INFO'}, f"\"{object.name}\" is not a mesh. Skipped.")
                 continue
 
-            object_materials = object.data.materials
-
+            object_materials = [slot for slot in object.data.materials if slot]
             if not object_materials:
                 self.report({'INFO'}, f"\"{object.name}\" has no materials. Skipped.")
                 continue
 
-            if len(object_materials) != 1:
-                self.report({'INFO'}, f"\"{object.name}\" has more than one material. Trying for active.")
-                material = object.active_material
+            active_material = object.active_material
+            if active_material:
+                material = active_material
+                self.report({'INFO'}, f"'{object.name}': trying active material '{material.name}'.")
             else:
                 material = object_materials[0]
+                self.report({'INFO'}, f"'{object.name}': active material socket is None, trying '{material.name}'.")
 
-            nodes = material.node_tree.nodes
+            node_tree = node_utils.Node_Tree_Wrapper(material.node_tree)
 
-            material_output = None
-            for node in nodes:
-                if node.type == 'OUTPUT_MATERIAL' and node.is_active_output:
-                    material_output = node
-                    break
-
+            material_output = node_tree.output
             if not material_output:
-                self.report({'INFO'}, f"\"{material.name}\" has no material output node. \"{object.name}\" is skipped.")
+                self.report({'INFO'}, f"'{material.name}' has no material output node. '{object.name}' is skipped.")
                 continue
 
-            material_output_displacement_links = material_output.inputs[2].links
-            if not material_output_displacement_links:
-                self.report({'INFO'}, f"\"{material.name}\" material output node has no displacement input. \"{object.name}\" is skipped.")
+            displacement = material_output['Displacement']
+            if not displacement:
+                self.report({'INFO'}, f"'{material.name}' material output node has no displacement input. '{object.name}' is skipped.")
                 continue
 
-            displacement_node = material_output_displacement_links[0].from_node
-            if displacement_node.type != 'DISPLACEMENT':
-                self.report({'INFO'}, f"\"{material.name}\" material output node has no connection with a displacement node. \"{object.name}\" is skipped.")
+            if displacement.type != 'DISPLACEMENT':
+                self.report({'INFO'}, f"'{material.name}' material output node has no connection with a displacement node. '{object.name}' is skipped.")
                 continue
 
-            midlevel = displacement_node.inputs[1].default_value
-            scale = displacement_node.inputs[2].default_value
-
-            height_links = displacement_node.inputs[0].links
-            if not height_links:
+            height_node = displacement['Height']
+            if not height_node:
                 self.report({'INFO'}, f"\"{material.name}\" has no height output. \"{object.name}\" is skipped.")
                 continue
-            else:
-                height_output_socket = height_links[0].from_socket
-            
+              
             particle_systems_modifiers = [modifier for modifier in object.modifiers if modifier.type == 'PARTICLE_SYSTEM']
-
             if not particle_systems_modifiers:
                 self.report({'INFO'}, f"\"{object.name}\" has no particle systems. Skipped.")
                 continue
-
-            bake_plane.at_uv_multiplier = object.at_uv_multiplier
-
+            
+            filtered_particle_systems_modifiers = []
             for modifier in particle_systems_modifiers:
                 particle_system = modifier.particle_system
-
-                if particle_system.point_cache.is_baked:
-                    bpy.ops.ptcache.free_bake({'point_cache': particle_system.point_cache})
-
-                bpy.ops.particle.edited_clear({'active_object': object})
-
+                
+                if not modifier.show_viewport:
+                    self.report({'INFO'}, f"'{particle_system.name}' system of '{object.name}' is enabled in the viewport. Skipped.")
+                    continue
+                
                 particles_settings = particle_system.settings
-
-                particles_settings.type = 'EMITTER'
-
-                particles_settings.frame_start = 1
-                particles_settings.frame_end = 1
-
-                particles_settings.normal_factor = 1
-                particles_settings.tangent_factor = 0
-                particles_settings.object_align_factor[0] = 0
-                particles_settings.object_align_factor[1] = 0
-                particles_settings.object_align_factor[2] = 0
-
-                seed = particle_system.seed
-                particle_system.seed = seed
-
-            evaluated_object = context.evaluated_depsgraph_get().id_eval_get(object)
-
-            particle_systems_modifiers = [modifier for modifier in evaluated_object.modifiers if modifier.type == 'PARTICLE_SYSTEM']
-
-            for modifier in particle_systems_modifiers:
-
-                particle_system = modifier.particle_system
-                particles = particle_system.particles
-                number_of_particles = len(particles)
-                seed = particle_system.seed
-
-                x = 1
-                y = number_of_particles
-
-                flat_list_3 = [0] * (3 * number_of_particles)
-                flat_list_4 = [0] * (4 * number_of_particles)
-
-                flat_uvs = []
-                for particle in particle_system.particles:
-                    uv = particle.uv_on_emitter(modifier=modifier)
-                    flat_uvs.extend((uv[0], uv[1], 0, 1))
                 
-                if not bake_plane.data.materials:
-                    bake_plane.data.materials.append(material)
-                else:
-                    bake_plane.data.materials[0] = material
-                    
-                with temp_image(x, y) as uvs_image, temp_image(x, y) as displacement_image:
-
-                    uvs_image.pixels.foreach_set(flat_uvs)
-
-                    with uv_override(material, uvs_image), baking_image_node(material, displacement_image), output_override(material, material_output, height_output_socket):
-                        
-                        cycles_samples = context.scene.cycles.samples
-                        context.scene.cycles.samples = 1
-                        
-                        start2 = datetime.now()
-                        # bpy.ops.object.bake({'active_object': bake_plane}, type='EMIT')
-                        bpy.ops.object.bake(type='EMIT') # scene update
-                        print("Bake time:", datetime.now() - start2)
-
-                        context.scene.cycles.samples = cycles_samples
-                        
-                    displacement_image.pixels.foreach_get(flat_list_4)
-                    heights = flat_list_4[0::4]
-
-                particles.foreach_get("velocity", flat_list_3)
-                normals = map(mathutils.Vector, zip(*[iter(flat_list_3)]*3))
-
-                shift = [normal * (height - midlevel) * scale for normal, height in zip(normals, heights)]
-
-                particles.foreach_get("location", flat_list_3)
-                old_location = map(mathutils.Vector, zip(*[iter(flat_list_3)]*3))
-
-                new_location = [x + y for x, y in zip(old_location, shift)]
-                new_location = list(itertools.chain.from_iterable(new_location))
-
-                particles.foreach_set("location", new_location)
-
-                if self.random_rotation:
-
-                    particles.foreach_get("rotation", flat_list_4)
-
-                    current_rotation = map(mathutils.Quaternion, zip(*[iter(flat_list_4)]*4))
-                    import numpy
-                    numpy.random.seed(seed)
-                    random_rotation = map(mathutils.Quaternion, itertools.repeat((1.0, 0.0, 0.0)), numpy.random.uniform(-math.pi, math.pi, number_of_particles))
-
-                    new_rotation = [a @ b for a, b in zip(current_rotation, random_rotation)]
-                    new_rotation =  list(itertools.chain.from_iterable(new_rotation))
-                    particles.foreach_set("rotation", new_rotation)
+                if particles_settings.child_type == 'INTERPOLATED':
+                    self.report({'INFO'}, f"Particle systems with interpolated children are not supported. '{particle_system.name}' system of '{object.name}' object is skipped.")
+                    continue
                 
-                context.scene.frame_set(2)
-                context.scene.frame_set(1)
-
-                bpy.ops.ptcache.bake_from_cache({'point_cache': particle_system.point_cache})
+                if not particles_settings.count:
+                    self.report({'INFO'}, f"'{particle_system.name}' system of '{object.name}' object has zero particles. Skipped")
+                    continue
                 
+                filtered_particle_systems_modifiers.append(modifier)
+            
+            if not filtered_particle_systems_modifiers:
+                continue
+            
+            x, y, z = object.scale
+            if not (math.isclose(x, y, rel_tol = 1e-05) and math.isclose(x, z, rel_tol = 1e-05) and math.isclose(y, z, rel_tol = 1e-05)):
+                self.report({'WARNING'}, f"\"{object.name}\" has non uniform scale. The result may be incorrect.")
+            
+            scale = displacement.get_value('Scale')
+            if displacement.space == 'OBJECT':
+                # object_scale = mathutils.Vector(object.scale)
+                scale = mathutils.Vector(object.scale) * scale
+            
+            jobs.append((object, material, filtered_particle_systems_modifiers))
+        
+        if not jobs:
+            self.report({'INFO'}, "No valid object selected.")
+            return {'CANCELLED'}
+        
+        
+        start = datetime.now()
+        
+        initial_active_object = context.object
+        
+        bpy.ops.mesh.primitive_plane_add(location=(0.0, 0.0, -100))
+        bake_plane = context.object
+        bake_plane.name = "__bake_plane__"
+        self.bake_plane = bake_plane
+        
+        cycles_samples = self.context.scene.cycles.samples
+        self.context.scene.cycles.samples = 1
+        
+        for object, material, modifiers in jobs:
+            
+            self.bake_plane.at_uv_multiplier = object.at_uv_multiplier
+            
+            for modifier in modifiers:
+                object.particle_systems.active_index = object.particle_systems.find(modifier.particle_system.name)
+                self.pre_process(object, modifier)
+                with node_utils.Isolate_Object_Render(object, modifier):
+                    self.bake_plane.hide_render = False
+                    self.match_system(object, material, modifier)
+
         bpy.data.objects.remove(bake_plane, do_unlink=True)
+        
+        self.context.scene.cycles.samples = cycles_samples
+        
         context.view_layer.objects.active = initial_active_object
+        
+        for object in selected_objects:
+            object.select_set(True)
 
         print("All time:", datetime.now() - start)
 
         return {'FINISHED'}
+    
+    def pre_process(self, object: bpy.types.Object, modifier: bpy.types.ParticleSystemModifier):
+        particle_system = modifier.particle_system
+        particles_settings = particle_system.settings
+        
+        if particles_settings.type == 'EMITTER':
+            self.context.scene.frame_set(1)
+            
+            if particle_system.point_cache.is_baked:
+                bpy.ops.ptcache.free_bake({'point_cache': particle_system.point_cache})
+
+        override = bl_utils.get_context_copy_with_object(self.context, object)
+        bpy.ops.particle.edited_clear(override)
+        
+        if particles_settings.type == 'EMITTER':
+            particles_settings.frame_start = 1
+            particles_settings.frame_end = 1
+            particles_settings.normal_factor = 1
+        
+        particles_settings.tangent_factor = 0
+        particles_settings.object_align_factor[0] = 0
+        particles_settings.object_align_factor[1] = 0
+        particles_settings.object_align_factor[2] = 0
+
+        if particles_settings.type == 'EMITTER':
+            seed = particle_system.seed
+            particle_system.seed = seed
+    
+    def match_system(self, object: bpy.types.Object, material: bpy.types.Material,  modifier: bpy.types.ParticleSystemModifier):
+        
+        evaluated_object: bpy.types.Object = object.evaluated_get(self.context.evaluated_depsgraph_get())
+        
+        modifier = evaluated_object.modifiers[modifier.name]
+        particle_system = modifier.particle_system
+        particle_system_settings = particle_system.settings
+        
+        shifts = self.get_shifts(modifier, material)
+        
+        if particle_system_settings.type == 'HAIR':
+            self.match_hair_system(modifier, shifts, object, evaluated_object)
+        else:
+            self.match_emitter_system(modifier, shifts)
+        
+    def get_shifts(self, modifier: bpy.types.ParticleSystemModifier, material: bpy.types.Material):
+        
+        node_tree = node_utils.Node_Tree_Wrapper(material.node_tree)
+        material_output = node_tree.output
+        displacement = material_output['Displacement']
+        midlevel = displacement.get_value('Midlevel')
+        scale = displacement.get_value('Scale')
+        height_output_socket = displacement.inputs['Height'].nodes[0][1]
+        
+        particle_system = modifier.particle_system    
+        particles = particle_system.particles
+        number_of_particles = len(particles)
+        
+        x = 1
+        y = number_of_particles
+
+        flat_list_3 = [0] * (3 * number_of_particles)
+        flat_list_4 = [0] * (4 * number_of_particles)
+
+        # if has a bad geometry such as n-gons or big twisted faces the coordinates will be incorrect
+        flat_uvs = []
+        for particle in particles:
+            uv = particle.uv_on_emitter(modifier = modifier)
+            flat_uvs.extend((uv[0], uv[1], 0, 1))
+        
+        if not self.bake_plane.data.materials:
+            self.bake_plane.data.materials.append(material)
+        else:
+            self.bake_plane.data.materials[0] = material
+            
+        with node_utils.Temp_Image(x, y) as uvs_image, node_utils.Temp_Image(x, y) as displacement_image:
+
+            uvs_image.pixels.foreach_set(flat_uvs)
+
+            with node_utils.UV_Override(material, uvs_image), \
+                node_utils.Baking_Image_Node(material, displacement_image), \
+                node_utils.Output_Override(material, material_output, height_output_socket):
+                
+                start2 = datetime.now()
+                
+                override = bl_utils.get_context_copy_with_object(self.context, self.bake_plane)
+                bpy.ops.object.bake(override, type='EMIT')
+                
+                print("Bake time:", datetime.now() - start2)
+                
+            displacement_image.pixels.foreach_get(flat_list_4)
+            heights = flat_list_4[0::4]
+
+        particles.foreach_get('velocity', flat_list_3)
+        
+        normals = map(mathutils.Vector, zip(*[iter(flat_list_3)]*3))
+        
+        shifts = [normal.normalized() * (height - midlevel) * scale for normal, height in zip(normals, heights)]
+        
+        return shifts
+    
+    def match_hair_system(self, modifier: bpy.types.ParticleSystemModifier, shifts: typing.List[mathutils.Vector], object: bpy.types.Object, evaluated_object: bpy.types.Object):
+        particle_system = modifier.particle_system
+        particles = particle_system.particles
+ 
+        matrix_world = object.matrix_world
+        translation, rotation, scale = matrix_world.decompose()
+        translation.zero()
+        scale = mathutils.Vector( (1 / scale[0], 1 / scale[0], 1 / scale[0]) )
+        matrix = mathutils.Matrix.LocRotScale(translation, rotation, scale)
+        
+        for particle, shift in zip(particles, shifts):                        
+            for key in particle.hair_keys:
+                new_co = key.co_object(evaluated_object, modifier, particle) + shift @ matrix
+                key.co_object_set(evaluated_object, modifier, particle, new_co)
+        
+        if self.random_rotation:
+            self.set_random_rotation(particle_system, )
+        
+        override = bl_utils.get_context_copy_with_object(self.context, object)
+        bpy.ops.particle.particle_edit_toggle(override)
+        bpy.ops.particle.particle_edit_toggle(override)
+    
+    def match_emitter_system(self, modifier: bpy.types.ParticleSystemModifier, shifts: typing.List[mathutils.Vector]):
+        particle_system = modifier.particle_system
+        particles = particle_system.particles
+        
+        flat_list_3 = [0] * (3 * len(particles))
+        particles.foreach_get('location', flat_list_3)
+        
+        old_location = map(mathutils.Vector, zip(*[iter(flat_list_3)]*3))  
+        
+        new_location = [x + y for x, y in zip(old_location, shifts)]
+        new_location = list(itertools.chain.from_iterable(new_location))
+        particles.foreach_set('location', new_location)
+        
+        if self.random_rotation:
+            self.set_random_rotation(particle_system)
+
+        self.context.scene.frame_set(2)
+        self.context.scene.frame_set(1)
+        bpy.ops.ptcache.bake_from_cache({'point_cache': particle_system.point_cache})
+        
+    def set_random_rotation(self, particle_system: bpy.types.ParticleSystems):
+        particles = particle_system.particles
+        number_of_particles = len(particles)
+        
+        flat_list_4 = [0] * (4 * number_of_particles)
+        particles.foreach_get('rotation', flat_list_4)
+
+        current_rotation = map(mathutils.Quaternion, zip(*[iter(flat_list_4)]*4))
+        import numpy
+        numpy.random.seed(particle_system.seed)
+        random_rotation = map(mathutils.Quaternion, itertools.repeat((1.0, 0.0, 0.0)), numpy.random.uniform(-math.pi, math.pi, number_of_particles))
+
+        new_rotation = [a @ b for a, b in zip(current_rotation, random_rotation)]
+        new_rotation =  list(itertools.chain.from_iterable(new_rotation))
+        particles.foreach_set('rotation', new_rotation)
 
 
 class ATOOL_OT_get_web_info(bpy.types.Operator, Object_Mode_Poll):
@@ -1028,11 +1121,17 @@ class ATOOL_OT_get_web_asset(bpy.types.Operator, Object_Mode_Poll):
         return {'FINISHED'}
 
 
-class ATOOL_OT_distibute(bpy.types.Operator, Object_Mode_Poll):
-    bl_idname = "atool.distibute"
-    bl_label = "Distibute"
-    bl_description = "Distibute the selection to the active object with a particle system"
+class ATOOL_OT_distribute(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.distribute"
+    bl_label = "Distribute"
+    bl_description = "Distribute the selection to the active object with a particle system"
     bl_options = {'REGISTER', 'UNDO'}
+
+    name: bpy.props.StringProperty(name = 'Name', default = 'New Particles')
+
+    def invoke(self, context, event):
+        self.seed = int(mathutils.noise.random() * 9999)
+        return self.execute(context)
 
     def execute(self, context):
 
@@ -1047,15 +1146,18 @@ class ATOOL_OT_distibute(bpy.types.Operator, Object_Mode_Poll):
             return {'CANCELLED'}
 
         target = context.object
-
         if not hasattr(target, 'modifiers'):
             self.report({'INFO'}, f"{target.name} cannot have particles.")
             return {'CANCELLED'}
         
         particles_objects = context.selected_objects.copy()
-        particles_objects.remove(target)
+        particles_objects.remove(context.object)
+
+        longest_substring = utils.get_longest_substring([object.name for object in particles_objects])
+        if len(longest_substring) >= 3:
+            self.name = longest_substring
     
-        particle_system_modifier = target.modifiers.new(name = "__atool__", type='PARTICLE_SYSTEM')
+        particle_system_modifier = target.modifiers.new(name = self.name, type='PARTICLE_SYSTEM')
 
         if not particle_system_modifier:
             self.report({'INFO'}, f"{target.name} cannot have particles.")
@@ -1063,9 +1165,12 @@ class ATOOL_OT_distibute(bpy.types.Operator, Object_Mode_Poll):
 
         particle_system = particle_system_modifier.particle_system
         
-        particle_system.seed = int(mathutils.noise.random() * 9999)
+        particle_system.name = self.name
+        particle_system.seed = self.seed
 
         settings = particle_system.settings
+        settings.name = self.name
+        settings.use_modifier_stack = True
         settings.type = 'HAIR'
         settings.distribution = 'RAND'
         settings.use_advanced_hair = True
@@ -1076,7 +1181,7 @@ class ATOOL_OT_distibute(bpy.types.Operator, Object_Mode_Poll):
         settings.hair_length = 1
         settings.particle_size = 1
 
-        collection = bpy.data.collections.new("__atool_particle_collection__")
+        collection = bpy.data.collections.new(self.name + " Particle Collection")
         # context.scene.collection.children.link(collection)
         for object in particles_objects:
             collection.objects.link(object)
@@ -1092,8 +1197,6 @@ class ATOOL_OT_distibute(bpy.types.Operator, Object_Mode_Poll):
         settings.size_random = 0.5
         settings.rotation_factor_random = 0.05
         settings.phase_factor_random = 2
-
-        
 
         return {'FINISHED'}
 
@@ -1128,13 +1231,12 @@ class ATOOL_OT_dolly_zoom(bpy.types.Operator, Object_Mode_Poll):
         description="Target focal length",
         default = 50
         )
-
-    def execute(self, context):
-
+    
+    def invoke(self, context , event):
         selected_objects = context.selected_objects
 
         if not selected_objects:
-            self.report({'INFO'}, f"No selected objects. Select two objects.")
+            self.report({'INFO'}, f"No selected objects. Select two objects. The active object must be a camera.")
             return {'CANCELLED'}
 
         active_object = context.object
@@ -1143,19 +1245,27 @@ class ATOOL_OT_dolly_zoom(bpy.types.Operator, Object_Mode_Poll):
             return {'CANCELLED'}
 
         if len(selected_objects) == 1:
-            self.report({'INFO'}, f"Only one object is selected. Select two objects.")
+            self.report({'INFO'}, f"Only a camera is selected. Select also an object.")
             return {'CANCELLED'}
+        
+        self.camera = bl_utils.Reference(active_object)
+        self.focal_length = active_object.data.lens
+        return self.execute(context)
 
-        camera = active_object
+    def execute(self, context):
+        camera = self.camera.get()
         objects = context.selected_objects.copy()
         objects.remove(camera)
-
-        target = objects[0]
- 
-        dist = (camera.matrix_world.translation - target.matrix_world.translation).length
+        
+        target_point = sum((object.matrix_world.translation for object in objects), start = mathutils.Vector())/len(objects)
+        dist = (camera.matrix_world.translation - target_point).length
 
         fov = camera.data.angle
         width = 2 * dist * math.tan(fov/2)
+         
+        if self.focal_length == 0:
+            self.focal_length = 1
+            self.report({'INFO'}, f"The focal length cannot be zero. Set to 1.")
             
         target_fov = 2 * math.atan(camera.data.sensor_width/(2 * self.focal_length))
 
@@ -1173,11 +1283,21 @@ class ATOOL_OT_dolly_zoom(bpy.types.Operator, Object_Mode_Poll):
 class ATOOL_OT_find_missing(bpy.types.Operator, Object_Mode_Poll):
     bl_idname = "atool.find_missing"
     bl_label = "Find Missing"
-    bl_description = "Find missing files with Everyting"
+    bl_description = "Find missing files with Everything"
     bl_options = {'REGISTER', 'UNDO'}
 
-    prefer_desending: bpy.props.BoolProperty(name="Prefer Desending", default = True)
+    prefer_descending: bpy.props.BoolProperty(name="Prefer Descending", default = True)
     prefer_asset_folder: bpy.props.BoolProperty(name="Prefer Asset Folder", default = True)
+
+    by_closest_path_to: bpy.props.EnumProperty(
+                name = 'Closest Path To',
+                items = [
+                    ('blend', 'Blend File', 'The blend file location if saved'),
+                    ('last', 'Last Known Location', 'The last known location of the file'),
+                    ('auto', 'Auto', 'Prefer the last known location if not got filtered')
+                ],
+                default = 'blend')
+
     # reload: bpy.props.BoolProperty(name="Reload", default = True)
 
     def invoke(self, context, event):
@@ -1186,12 +1306,12 @@ class ATOOL_OT_find_missing(bpy.types.Operator, Object_Mode_Poll):
 
         for block in bpy.data.images:
             if block.source == 'FILE':
-                path = bpy.path.abspath(block.filepath)
+                path = bl_utils.get_block_abspath(block)
                 if not os.path.exists(path):
                     missing_files.append(bl_utils.Missing_File(path, block))
 
         for block in bpy.data.libraries:
-            path = bpy.path.abspath(block.filepath)
+            path = bl_utils.get_block_abspath(block)
             if not os.path.exists(path):
                 missing_files.append(bl_utils.Missing_File(path, block))
 
@@ -1235,7 +1355,7 @@ class ATOOL_OT_find_missing(bpy.types.Operator, Object_Mode_Poll):
         self.asset_paths = [asset.path for asset in self.asset_data.values()]
 
 
-    def filter_desending(self, file, found_files):
+    def filter_descending(self, file, found_files):
             filtered_files = []
             local_base = os.path.dirname(file)
             for path in found_files:
@@ -1272,27 +1392,53 @@ class ATOOL_OT_find_missing(bpy.types.Operator, Object_Mode_Poll):
     def execute(self, context):
         
         if not self.found_files_by_name:
-            self.report({'INFO'}, f"No missing files found.")
+
+            if not self.missing_files_by_path:
+                self.report({'INFO'}, f"No missing files found.")
+
+            for path in self.missing_files_by_path:
+                self.report({'WARNING'}, f"{path} is missing but not found.")
+
+            if self.missing_files_by_path:
+                self.report({'WARNING'}, f"Some files are missing but not found.")
+            
             return {'CANCELLED'}
 
         for path, files in self.missing_files_by_path.items():
             paths = self.found_files_by_name.get(os.path.basename(path))
             if not paths:
-                self.report({'WARNING'}, f"{path} not found.")
+                self.report({'WARNING'}, f"{path} is missing but not found.")
                 continue
 
-            if self.prefer_desending:
-                filtered = self.filter_desending(path, paths)
+            start = bpy.data.filepath if bpy.data.is_saved else path
+            filtered = None
+
+            if self.prefer_descending:
+                filtered = self.filter_descending(start, paths)
                 if filtered:
                     paths = filtered
+                elif start != path:
+                    filtered = self.filter_descending(path, paths)
+                    if filtered:
+                        paths = filtered
 
             if self.prefer_asset_folder:
-                filtered = self.filter_asset_folder(path, paths)
+                filtered = self.filter_asset_folder(start, paths)
                 if filtered:
                     paths = filtered
+                elif start != path:
+                    filtered = self.filter_asset_folder(path, paths)
+                    if filtered:
+                        paths = filtered
+
+            if self.by_closest_path_to == 'last':
+                start = path
+            elif self.by_closest_path_to == 'auto':
+                if filtered == None and bpy.data.is_saved:
+                    start = path
             
-            closest_path = utils.get_closest_path(path, paths)
-            for file in files:
+            closest_path = utils.get_closest_path(start, paths)
+            for file in files: # blocks with the same missing source path
                 file.closest_path = closest_path
 
         for file in self.missing_files:
@@ -1301,6 +1447,74 @@ class ATOOL_OT_find_missing(bpy.types.Operator, Object_Mode_Poll):
                 file.reload()
 
         return {'FINISHED'}
+
+
+class ATOOL_OT_remap_paths(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.remap_paths"
+    bl_label = "Remap Path"
+    bl_description = """Remap descending paths to relative and others to absolute"""
+    bl_options = {'REGISTER', 'UNDO'}
+
+    do_asset_path: bpy.props.BoolProperty(name="Remap asset's path relative to library if appropriate", default = True)
+
+    def execute(self, context):
+        blend_path = bpy.data.filepath
+        if not blend_path:
+            self.report({'INFO'}, f"Save the blend before remapping.")
+            return {'CANCELLED'}
+
+        asset_data, id = get_asset_data_and_id(operator, context)
+        library_exists = bool(asset_data.library)
+        is_blend_asset = asset_data.is_sub_asset(blend_path)
+
+        def is_descending(path):
+            if library_exists and is_blend_asset and asset_data.is_sub_asset(path):
+                return True
+
+            blend_dir = os.path.dirname(blend_path)
+            dir =  os.path.dirname(path)
+
+            try:
+                common_path = os.path.commonpath((blend_dir, dir))
+                if os.path.commonpath((blend_dir, common_path)) == blend_dir:
+                    return True
+            finally:
+                return False
+
+        # cannot remap the path of a library image data block
+        blocks = [block for block in bpy.data.images if block.source == 'FILE' and block.filepath and not block.library]
+        blocks += [block for block in bpy.data.libraries if block.filepath]
+
+        was_relative = 0
+        was_absolute = 0
+        to_relative = 0
+        to_absolute = 0
+
+        for block in blocks:
+            path = block.filepath
+            abs_path = bl_utils.get_block_abspath(block)
+            if not os.path.exists(abs_path):
+                continue
+
+            if path.startswith('//'):
+                was_relative += 1
+            else:
+                was_absolute += 1
+
+            if is_descending(path):
+                block.filepath = bpy.path.relpath(path)
+                to_relative += 1
+            else:
+                block.filepath = abs_path
+                to_absolute += 1
+
+        if any((was_relative, was_absolute)):
+            self.report({'INFO'}, f"Relative: {was_relative} -> {to_relative}. Absolute: {was_absolute} -> {to_absolute}.")
+        else:
+            self.report({'INFO'}, f"No external dependencies.")
+
+        return {'FINISHED'}
+
 
 
 class ATOOL_OT_unrotate(bpy.types.Operator, Object_Mode_Poll):
@@ -1438,7 +1652,10 @@ class ATOOL_OT_import_unreal(bpy.types.Operator, Object_Mode_Poll):
         materials = info.get("materials")
         textures_info = info.get("textures")
 
-        if not any((meshes, materials)):
+        converted_textures = []
+
+        if not any((meshes, materials, textures_info)):
+            self.report({'INFO'}, f"Nothing to import.")
             return {'CANCELLED'}
 
         def get_mesh_material(name, use_fake_user = False):
@@ -1455,14 +1672,16 @@ class ATOOL_OT_import_unreal(bpy.types.Operator, Object_Mode_Poll):
                         print(f"{path} does not exist.")
                         continue
 
+                    converted_textures.append[path]
+
                     basename_without_suffix = os.path.splitext(basename)[0]
                     info = textures_info[basename_without_suffix]
 
-                    path = image_utils.convert_unreal_image(path ,bgr_to_rgb=info['is_bugged_bgr'])
+                    path = image_utils.convert_unreal_image(path, bgr_to_rgb=info['is_bugged_bgr'])
                     invert_normal_y[path] = not info['flip_green_channel']
                     textures.append(path)
 
-                material = materials[name] = bl_utils.get_material(textures, name = name, invert_normal_y = invert_normal_y, use_fake_user = use_fake_user)
+                material = materials[name] = node_utils.get_material(textures, name = name, invert_normal_y = invert_normal_y, use_fake_user = use_fake_user)
             return material
 
         import io_scene_fbx.import_fbx as import_fbx # type: ignore
@@ -1488,10 +1707,38 @@ class ATOOL_OT_import_unreal(bpy.types.Operator, Object_Mode_Poll):
                 bpy.data.materials.remove(slot.material)
                 slot.material = get_mesh_material(material_name)
 
+        # separate materials
         for name in materials:
             get_mesh_material(name, use_fake_user = True)
 
-        # bl_utils.arrage_by_materials(bl_objects) # not available for new meshes ?
+        separate_textures = []
+        # separate textures
+        for file in os.scandir(directory):
+
+            if file.path in converted_textures:
+                continue
+
+            stem, ext = os.path.splitext(file.name)
+
+            if ext.lower() not in ('.tga', '.bmp'):
+                continue
+
+            info = textures_info.get(stem)
+            if info:
+                bgr_to_rgb = info['is_bugged_bgr']
+                is_gl_normal = info['flip_green_channel']
+            else:
+                bgr_to_rgb = False
+                is_gl_normal = False
+
+            path = image_utils.convert_unreal_image(file.path, bgr_to_rgb=bgr_to_rgb)
+
+            separate_textures.append(path)
+
+        if separate_textures:
+            self.report({'INFO'}, f"{len(separate_textures)} separete textures are converted.")
+
+        # bl_utils.arrange_by_materials(bl_objects) # not available for new meshes ?
 
         return {'FINISHED'}
 
@@ -1508,10 +1755,10 @@ class ATOOL_OT_copy_unreal_script(bpy.types.Operator, Object_Mode_Poll):
         return {'FINISHED'}
 
 
-class ATOOL_OT_arrage_by_materials(bpy.types.Operator, Object_Mode_Poll):
-    bl_idname = "atool.arrage_by_materials"
-    bl_label = "Arrage By Materials"
-    bl_description = "Arrage the selected objects into a grid by their disjointed sets of materials"
+class ATOOL_OT_arrange_by_materials(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.arrange_by_materials"
+    bl_label = "Arrange By Materials"
+    bl_description = "Arrange the selected objects into a grid by their disjointed sets of materials"
     bl_options = {'REGISTER', 'UNDO'}
 
     by_images: bpy.props.BoolProperty(name="By Textures", default = True, description="Group by used texture path.")
@@ -1524,7 +1771,7 @@ class ATOOL_OT_arrage_by_materials(bpy.types.Operator, Object_Mode_Poll):
             self.report({'INFO'}, f"No selected objects.")
             return {'CANCELLED'}
 
-        bl_utils.arrage_by_materials(selected_objects, by_materials=self.by_materials, by_images=self.by_images)
+        bl_utils.arrange_by_materials(selected_objects, by_materials=self.by_materials, by_images=self.by_images)
 
         return {'FINISHED'}
 
@@ -1546,7 +1793,7 @@ class ATOOL_OT_move_asset_to_desktop(bpy.types.Operator, Object_Mode_Poll):
 class ATOOL_OT_open_blend(bpy.types.Operator, Object_Mode_Poll):
     bl_idname = "atool.open_blend"
     bl_label = "Open Blend"
-    bl_description = "Open the last modifed blend file."
+    bl_description = "Open the last modified blend file."
 
     def execute(self, context):
 
@@ -1625,7 +1872,10 @@ class ATOOL_OT_smooth_lowpoly(bpy.types.Operator, Object_Mode_Poll):
 
 class Image_Import_Properties:
 
-    name: bpy.props.StringProperty(name='Name')
+    name: bpy.props.StringProperty(
+        name='Name',
+        options={'SKIP_SAVE'}
+    )
 
     is_y_minus_normal_map: bpy.props.BoolProperty(
         name="Y- Normal Map",
@@ -1662,7 +1912,7 @@ class Image_Import_Properties:
 
 class ATOOL_OT_import_files(bpy.types.Operator, Image_Import_Properties, Object_Mode_Poll):
     bl_idname = "atool.import_files"
-    bl_label = "Asset From Files"
+    bl_label = "New From Files"
     bl_description = "Create an asset from selected files. Does not include folders, for this case use the auto folder or put the asset directly to the library"
 
     directory: bpy.props.StringProperty(
@@ -1752,31 +2002,6 @@ class ATOOL_OT_render_partial(bpy.types.Operator, Object_Mode_Poll):
         return {'FINISHED'}
 
 
-def work(region, indent):
-
-    divider = 120
-    import time
-    from timeit import default_timer as timer
-
-    total_time = 60
-    init_time = 1/divider
-    sleep_time = init_time
-    
-    for i in bl_utils.iter_with_progress(range(divider * total_time), indent = indent, prefix = str(indent)):
-        start = timer()
-        time.sleep(sleep_time)
-        t = timer() - start
-
-        if t > init_time:
-            sleep_time -= min(sleep_time/100 ,0.001 / min( 0.1, t/init_time))
-        elif t < init_time:
-            sleep_time += min(sleep_time/100 ,0.001 / min( 0.1, init_time/t))
-    
-    print("sleep_time:", sleep_time)
-    print("init:", init_time)
-    print("sleep_time/init_time:", sleep_time/init_time)
-
-
 class ATOOL_OT_test_draw(bpy.types.Operator, Object_Mode_Poll):
     bl_idname = "atool.test_draw"
     bl_label = "Test Draw"
@@ -1784,98 +2009,639 @@ class ATOOL_OT_test_draw(bpy.types.Operator, Object_Mode_Poll):
     def execute(self, context):
 
         # threading.Thread(target=work, args=(context.region, 1), daemon=True).start()
-        threading.Thread(target=work, args=(context.region, 0), daemon=True).start()
+        threading.Thread(target=self.work, args=(context.region, 0), daemon=True).start()
 
         return {'FINISHED'}
+    
+    @staticmethod
+    def work(region, indent):
+        divider = 120
+        import time
+        from timeit import default_timer as timer
 
+        total_time = 60
+        init_time = 1/divider
+        sleep_time = init_time
+        
+        for i in bl_utils.iter_with_progress(range(divider * total_time), indent = indent, prefix = str(indent)):
+            start = timer()
+            time.sleep(sleep_time)
+            t = timer() - start
 
-class ATOOL_OT_add_camera_visibility_vertex_group(bpy.types.Operator):
-    bl_idname = "atool.add_camera_visibility_vertex_group"
-    bl_label = "Camera Visibility Vertex Group"
-    bl_description = "Add a camera visibility vertex group"
+            if t > init_time:
+                sleep_time -= min(sleep_time/100 ,0.001 / min( 0.1, t/init_time))
+            elif t < init_time:
+                sleep_time += min(sleep_time/100 ,0.001 / min( 0.1, init_time/t))
+        
+        print("sleep_time:", sleep_time)
+        print("init:", init_time)
+        print("sleep_time/init_time:", sleep_time/init_time)
+    
+
+class ATOOL_OT_show_current_blend(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.show_current_blend"
+    bl_label = "Show Current Blend"
+    bl_description = "Show the current blend file in the file browser"
 
     def execute(self, context):
 
-        camera_object = context.scene.camera
-        if not camera_object:
-            self.report({'INFO'}, "Set a camera.")
+        if not bpy.data.is_saved:
+            self.report({'INFO'}, f"The blend is not saved.")
             return {'CANCELLED'}
 
-        camera_data = camera_object.data
-
-        object = context.object
-        if object.type != 'MESH' or not object.data:
-            self.report({'INFO'}, f"Select a mesh object.")
-            return {'CANCELLED'}
-
-        # camera_object = None
-        # for object in bpy.data.objects:
-        #     print(object.data)
-
-        #     if object.type != 'CAMERA':
-        #         continue
-
-        #     if object.data == camera_data:
-        #         camera_object = object
-        #         break
-
-        # if not camera_object:
-        #     self.report({'INFO'}, "Add a camera to scene.")
-        #     return {'CANCELLED'}
-
-        camera_translation, camera_rotation, camera_scale = camera_object.matrix_world.decompose()
-
-        vectors = [mathutils.Vector(vector) for vector in camera_data.view_frame(scene = context.scene)]
-        camera_plane_normals = [camera_rotation @ vectors[index].cross(vectors[index + 1]) for index in range(-2, 2)]
-
-        object_matrix_world = object.matrix_world
-
-        all_ver_indexes = range(len(object.data.vertices))
-
-        vertex_group = object.vertex_groups.get('camera_visibility')
-        if not vertex_group:
-            vertex_group = object.vertex_groups.new(name='camera_visibility')
-        vertex_group.add(all_ver_indexes, 1, 'REPLACE')
-
-        depsgraph = context.evaluated_depsgraph_get()
-        object = object.evaluated_get(depsgraph)
-        #mesh = object.to_mesh(preserve_all_data_layers = True, depsgraph = depsgraph)
-        mesh = object.data
-
-        hit_vertices = []
-        for vertex in mesh.vertices:
-
-            origin = object_matrix_world.inverted() @ camera_translation
-            target = vertex.co
-            direction = target - origin
-            
-            if any(normal.dot(object_matrix_world @ target - camera_translation) < 0 for normal in camera_plane_normals):
-                continue
-            
-            result, location, normal, index = object.ray_cast(origin, direction)
-            
-            if result and (location - target).length <= 0.0001:
-                hit_vertices.append(vertex.index)
-                
-        vert_to_poly = {index: [] for index in all_ver_indexes}
-        for p in mesh.polygons:
-            for v in p.vertices:
-                vert_to_poly[v].append(p)
-        
-        final_vert_indexes = []
-        for hit_vert in hit_vertices:
-            for poly in vert_to_poly[hit_vert]:
-                final_vert_indexes.extend(poly.vertices)
-
-        vertex_group.add(all_ver_indexes, 0, 'REPLACE')
-        vertex_group.add(final_vert_indexes, 1, 'REPLACE')
+        utils.os_show(self, (bpy.data.filepath, ))
 
         return {'FINISHED'}
 
 
-def vertex_group_menu(self, context):
-    layout = self.layout # type: bpy.types.UILayout
+class ATOOL_OT_replace_objects_with_active(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.replace_objects_with_active"
+    bl_label = "Replace With Active"
+    bl_description = "Replace the selected objects with copies of the active"
 
-    column = layout.column(align=True)
-    column.separator()
-    column.operator("atool.add_camera_visibility_vertex_group")
+    def execute(self, context: bpy.types.Context):
+        
+        active_object = context.object # type: bpy.types.Object
+        if not active_object:
+            self.report({'INFO'}, f"No active object.")
+            return {'CANCELLED'}
+        
+        selected_objects = context.selected_objects # type: typing.List[bpy.types.Object]
+        selected_objects.remove(active_object)
+        if not selected_objects:
+            self.report({'INFO'}, f"Select at least two objects")
+            return {'CANCELLED'}
+        
+        for object in selected_objects:
+            
+            object_copy = active_object.copy() # type: bpy.types.Object
+            # object_copy.data = active_object.data.copy()
+            
+            for collection in object.users_collection:
+                collection.objects.link(object_copy)
+            
+            object_copy.matrix_world = object.matrix_world
+            
+        bpy.data.batch_remove(selected_objects)
+
+        return {'FINISHED'}
+
+
+class ATOOL_OT_cap_resolution(bpy.types.Operator):
+    bl_idname = "atool.cap_resolution"
+    bl_label = "Cap Resolution"
+    bl_description = "Cap Resolution"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    cap_max_x_res: bpy.props.IntProperty(name='X Max Resolution', default = 3840)
+    cap_max_y_res: bpy.props.IntProperty(name='Y Max Resolution ', default = 2160)
+
+    def execute(self, context: bpy.types.Context):
+        x_res = context.scene.render.resolution_x
+        y_res = context.scene.render.resolution_y
+
+        max_x_res = self.cap_max_x_res
+        max_y_res = self.cap_max_y_res
+        
+        def cap_by_x():
+            context.scene.render.resolution_x = max_x_res
+            context.scene.render.resolution_y = y_res * max_x_res / x_res
+        
+        def cap_by_y():
+            context.scene.render.resolution_x = x_res * max_y_res / y_res
+            context.scene.render.resolution_y = max_y_res
+            
+        if x_res > y_res:
+            if x_res > max_x_res:
+                cap_by_x()
+                
+            elif y_res > max_y_res:
+                cap_by_y()
+        else:
+            if y_res > max_y_res:
+                cap_by_y()
+                
+            elif x_res > max_x_res:
+                cap_by_x()   
+
+        return {'FINISHED'}
+    
+
+class ATOOL_OT_select_linked(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.select_linked"
+    bl_label = "Select Linked"
+    bl_description = "Select objects with the same dependencies"
+
+    def execute(self, context: bpy.types.Context):
+        
+        selected_objects = context.selected_objects # type: typing.List[bpy.types.Object]
+        if not selected_objects:
+            self.report({'INFO'}, "No object selected.")
+            return {'CANCELLED'}
+        
+        dependencies = bl_utils.Dependency_Getter()
+        
+        selected_dependencies = []
+        for object in selected_objects:
+            selected_dependencies.extend(dependencies.get_object_dependencies_by_type(object))
+        
+        selected_dependencies = set(selected_dependencies)
+        
+        for object in context.selectable_objects:
+            
+            if selected_dependencies.isdisjoint(dependencies.get_object_dependencies_by_type(object)):
+                continue
+            
+            object.select_set(True)
+
+        return {'FINISHED'}
+    
+class ATOOL_OT_copy_attribution(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.copy_attribution"
+    bl_label = "Copy Attribution"
+    bl_description = "Copy the used assets attributions"
+
+    def execute(self, context: bpy.types.Context):
+        
+        objects = bpy.data.objects
+        if not objects:
+            self.report({'INFO'}, "No objects.")
+            return {'CANCELLED'}
+        
+        asset_data = context.window_manager.at_asset_data # type: data.AssetData
+        if not asset_data:
+            self.report({'INFO'}, "The library is empty.")
+            return {'CANCELLED'}
+        
+        objects = asset_data.get_assets_from_objects(objects)
+        if not objects:
+            self.report({'INFO'}, "No assets found.")
+            return {'CANCELLED'}
+        
+        
+        all_assets = [] # type: typing.List[data.Asset]
+        for object, assets in objects.items():
+            all_assets.extend(assets)
+        all_assets = utils.deduplicate(all_assets)
+        
+        text = ""
+        asset_row_names = ('name', 'url', 'author', 'author_url', 'licence', 'licence_url')
+        for asset in all_assets:
+            text += "\t".join([asset.get(name, '') for name in asset_row_names])
+            text += "\t" + ", ".join(asset.get('tags', ()))
+            text += "\n"
+        
+        import pyperclip
+        pyperclip.copy(text)
+
+        return {'FINISHED'}
+    
+    
+
+class ATOOL_OT_delete_file_cache(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.delete_file_cache"
+    bl_label = "Delete Asset File Cache"
+    bl_description = "Delete the asset's file cache"
+
+    def execute(self, context: bpy.types.Context):
+        
+        data, id = get_asset_data_and_id(self, context)
+        if not (data and id):
+            return {'CANCELLED'}
+        
+        asset = data[id]
+        
+        file_info = asset.info.get("file_info")
+        if file_info == None:
+            self.report({'INFO'}, "No file cache.")
+            return {'CANCELLED'}
+        
+        asset.info.pop('file_info')
+        asset.update_info(update = False)
+        self.report({'INFO'}, "The file cache has been deleted.")
+        
+        return {'FINISHED'}
+    
+    
+class ATOOL_OT_delete_all_file_caches(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.delete_all_file_caches"
+    bl_label = "Delete All Asset File Caches"
+    bl_description = "Delete file caches of all the assets"
+    
+    def draw(self, context):
+        layout = self.layout
+        # layout.alignment = 'LEFT'
+        layout.label(text = "All the file caches will be deleted. This is not reversible.", icon='ERROR')
+    
+    def invoke(self, context, event):
+
+        self.asset_data = context.window_manager.at_asset_data # type: data.AssetData
+        if not self.asset_data:
+            operator.report({'INFO'}, "The library is empty.")
+            return {'CANCELLED'}
+
+        return context.window_manager.invoke_props_dialog(self, width=350)
+
+    def execute(self, context: bpy.types.Context):
+        
+        counter = 0
+        for asset in self.asset_data.values():
+            file_info = asset.info.get("file_info")
+            if file_info == None:
+                continue
+        
+            asset.info.pop("file_info")
+            asset.update_info(update = False)
+            counter += 1
+            
+        if counter:
+            self.report({'INFO'}, f"{counter} file caches deleted.")
+        else:
+            self.report({'INFO'}, f"No file caches found.")
+        
+        return {'FINISHED'}
+    
+
+class ATOOL_OT_import_sketchfab(bpy.types.Operator):
+    bl_idname = "atool.import_sketchfab"
+    bl_label = "Import Sketchfab ZIP"
+    bl_description = "WIP"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    geometry_type: bpy.props.StringProperty(
+        options={'HIDDEN'}
+    )
+    
+    __annotations__.update(bpy.types.IMPORT_SCENE_OT_obj.__annotations__)
+    __annotations__.update(bpy.types.IMPORT_SCENE_OT_fbx.__annotations__)
+    
+    filepath: bpy.props.StringProperty(
+        subtype='DIR_PATH',
+        options={'HIDDEN', 'SKIP_SAVE'}
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        # layout.alignment = 'LEFT'
+        # layout.use_property_decorate = False
+        # layout.prop(self, 'filepath')
+           
+        class Dummy_sfile:
+            active_operator = self
+        
+        class Dummy_Context:
+            space_data = Dummy_sfile()
+        
+        main_self =  self
+        class Dummy_Self:
+            def __init__(self, label: str = None):
+                self.layout = main_self.layout.box()
+                if label != None:
+                    self.layout.label(text = label)
+            
+        dummy_context = Dummy_Context()
+        
+        if self.geometry_type == '.obj':
+            layout.label(text = "OBJ Import:")
+            bpy.types.OBJ_PT_import_include.draw(Dummy_Self("Include"), dummy_context)
+            bpy.types.OBJ_PT_import_transform.draw(Dummy_Self("Transform"), dummy_context)
+            bpy.types.OBJ_PT_import_geometry.draw(Dummy_Self("Geometry"), dummy_context)
+        elif self.geometry_type == '.fbx':
+            layout.label(text = "FBX Import:")
+            bpy.types.FBX_PT_import_include.draw(Dummy_Self("Include"), dummy_context)
+            bpy.types.FBX_PT_import_transform.draw(Dummy_Self("Transform"), dummy_context)
+            bpy.types.FBX_PT_import_transform_manual_orientation.draw_header(Dummy_Self("Transform Manual"), dummy_context)
+            bpy.types.FBX_PT_import_transform_manual_orientation.draw(Dummy_Self(), dummy_context)
+            bpy.types.FBX_PT_import_animation.draw_header(Dummy_Self("Animation"), dummy_context)
+            bpy.types.FBX_PT_import_animation.draw(Dummy_Self(), dummy_context)
+            bpy.types.FBX_PT_import_armature.draw(Dummy_Self("Armature"), dummy_context)
+
+    def execute(self, context: bpy.types.Context):
+        # self.path = r'D:\asset\data\worldmachine-terrain\worldmachine-terrain.zip'
+        # self.path = r'D:\source\my_misc\projects_temp_loc\any_no_ref_1\temp_asset\desert-runner.zip'
+        path = self.filepath
+        
+        stem, ext = os.path.splitext(os.path.basename(path))
+        extraction_dir = os.path.join(bpy.app.tempdir, stem)
+        source_dir = os.path.join(extraction_dir, 'source')
+        textures_dir = os.path.join(extraction_dir, 'textures')
+        
+        files = utils.extract_zip(path, path = extraction_dir, extract = 'False')
+        
+        for file in files:
+            if not (os.path.commonpath((source_dir, file)) == source_dir or os.path.commonpath((textures_dir, file)) == textures_dir):
+                self.report({'INFO'}, f"Not valid sketchfab zip.")
+                return {'CANCELLED'}
+        
+        if not self.is_repeat():
+            self.extracted_files = utils.extract_zip(path, path = extraction_dir)
+        
+        files = self.extracted_files
+        files = utils.File_Filter.from_files(files)
+        
+        geometry_files = files.get_by_type('geometry')
+        
+        if not geometry_files:
+            self.report({'INFO'}, f"No geometry to import or file is not supported.")
+            return {'CANCELLED'}
+        
+        geometry = geometry_files[0]
+        
+        suffix = geometry.suffix.lower()
+        
+        init_selected_objects = context.selected_objects
+        for object in init_selected_objects:
+            object.select_set(False)
+            
+        import_objects = []
+        
+        if suffix == '.obj':
+            self.geometry_type = '.obj'
+            bpy.ops.import_scene.obj(filepath = str(geometry))
+            
+        elif suffix == '.fbx':
+            self.geometry_type = '.fbx'
+                        
+            key_args = {}
+            for key in bpy.types.IMPORT_SCENE_OT_fbx.__annotations__.keys():
+                value = getattr(self, key)
+                if value:
+                    key_args[key] = value
+                    
+            key_args['filepath'] = str(geometry)
+            bpy.ops.import_scene.fbx(**key_args) 
+            
+        else:
+            self.report({'INFO'}, f"No geometry was imported.")
+            return {'CANCELLED'}
+        
+        import_objects = context.selected_objects
+            
+        image_files = [str(file) for file in files.get_by_type('image')]
+            
+        for object in import_objects:
+            for material in object.data.materials:
+                
+                node_tree = node_utils.Node_Tree_Wrapper(material.node_tree)
+                
+                image_nodes = node_tree.get_by_bl_idname('ShaderNodeTexImage')
+                
+                # config = shader_editor_operator.get_definer_config(context)
+                config = type_definer.Filter_Config()
+                
+                if image_nodes:
+                    with image_utils.Image_Cache_Database() as db:
+                        images = [image_utils.Image.from_block(node.image, define_type = False, type_definer_config = config) for node in image_nodes]
+                    config.set_common_prefix((image.name for image in images))
+                else:
+                    config.set_common_prefix_from_paths(image_files)
+                    with image_utils.Image_Cache_Database() as db:
+                        images = [image_utils.Image.from_db(image, db, type_definer_config = config) for image in image_files]
+                        
+                # principled = node_tree.find_principled(ignore_inputs = True)
+                # if principled:
+                #     for child in principled.all_children:
+                #         child.delete()
+                
+                images_filtered, report_list = type_definer.filter_by_config(images, config)
+                    
+                for report in report_list:
+                    self.report(*report)
+                
+                new_material = node_utils.Material.from_image_objects(images_filtered)
+                new_material.target_material = material
+                new_material.set_viewport_colors(new_material.bl_material)
+                
+                excluded_images = set(images).difference(images_filtered)
+                for index, image in enumerate(excluded_images):
+                    node_tree = new_material.node_tree
+                    image_node = node_tree.new('ShaderNodeTexImage')
+                    image_node.image = bpy.data.images.load(filepath = image.path, check_existing=True)
+                    x, y = image_node.location
+                    image_node.location = x - 800, - y * index
+
+                return {'FINISHED'}
+
+        return {'FINISHED'}
+
+class ATOOL_OT_import_sketchfab_zip_caller(bpy.types.Operator, Object_Mode_Poll, bl_utils.Operator_Later_Caller):
+    bl_idname = "atool.import_sketchfab_zip_caller"
+    bl_label = "Import SketchFab ZIP"
+    bl_description = "Import SketchFab ZIP file. Supported: FBX, OBJ"
+    
+    filename_ext = '.zip'
+    
+    filter_glob: bpy.props.StringProperty(
+        default='*.zip',
+        options={'HIDDEN'}
+    )
+    
+    directory: bpy.props.StringProperty(
+        subtype='DIR_PATH',
+        options={'HIDDEN'}
+    )
+    
+    filepath: bpy.props.StringProperty(
+        subtype='DIR_PATH',
+        options={'HIDDEN', 'SKIP_SAVE'}
+    )
+    
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context: bpy.types.Context):
+        func = self.get_later_caller(bpy.ops.atool.import_sketchfab, execution_context = 'INVOKE_DEFAULT', undo = True, filepath = self.filepath)
+        # func = self.get_later_caller(bpy.ops.atool.import_sketchfab, context.copy(), 'EXEC_DEFAULT', True, filepath = self.filepath)
+        bpy.app.timers.register(func)
+        return {'FINISHED'}
+
+
+register.property(
+    'at_adapt_subdiv_setup_object', 
+    bpy.props.PointerProperty(type = bpy.types.Object),
+    bpy.types.Object
+)
+    
+class ATOOL_OT_setup_adaptive_subdivision(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.setup_adaptive_subdivision"
+    bl_label = "Adapt Subdiv Setup"
+    bl_description = "FOR BLENDER 3! Apply an adaptive subdivision setup for the selected objects for the active camera"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    ensure_adaptive_subdivision: bpy.props.BoolProperty(
+        name="Use Displacement",
+        description="Ensure adaptive subdivision setup for the active object",
+        default = False
+        )
+    preview_dicing_rate: bpy.props.FloatProperty(
+        name="Subdivision: Preview Dicing Rate",
+        default = 1,
+        soft_min=0.5,
+        max=1000
+        )
+    offscreen_dicing_scale: bpy.props.FloatProperty(
+        name="Subdivision: Offscreen Dicing Scale",
+        default = 16,
+        min= 1
+        )
+    subdivision_rate: bpy.props.IntProperty(
+        name="The subdivision rate for a base mash to generated a close-up mesh.",
+        default = 4,
+        min = 0,
+        soft_max = 7,
+        options = {'SKIP_SAVE'}
+        )
+    
+    def execute(self, context: bpy.types.Context):
+        
+        selected_objects = context.selected_objects
+        if not selected_objects:
+            self.report({'INFO'}, "Select an object.")
+            return {'CANCELLED'}
+        
+        meshes = [object for object in selected_objects if object.type == 'MESH']
+        if not meshes:
+            self.report({'INFO'}, "Only mesh objects supported.")
+            return {'CANCELLED'}
+        
+        object = context.object
+        initial_active_object = object
+        
+        def copy_object(object):
+            
+            object_copy = object.copy()
+            for collection in object.users_collection:
+                collection.objects.link(object_copy)
+                
+            object.at_adapt_subdiv_setup_object = object_copy
+            object_copy.select_set(False)
+            object_copy.name = object.name + ' AS Setup'
+            
+            return object_copy
+        
+        def move_modifier_to_first(modifier):
+            if bpy.app.version < (2,90,0):
+                for _ in range(len(object_copy.modifiers)):
+                    bpy.ops.object.modifier_move_up(modifier = modifier.name)
+            else:
+                bpy.ops.object.modifier_move_to_index(modifier = modifier.name, index=0)   
+        
+        particle_systems = []
+        if object.at_adapt_subdiv_setup_object:
+            prev_object = object.at_adapt_subdiv_setup_object
+            particle_systems = [modifier.particle_system.settings for modifier in prev_object.modifiers if modifier.type == 'PARTICLE_SYSTEM'] # type: typing.List[bpy.types.ParticleSettings]
+            bpy.data.objects.remove(object.at_adapt_subdiv_setup_object)
+            
+        for modifier_name in ('__AT_ASS_SUBSURF__', '__AT_ASS_DATA_TRANSFER__', '__AT_ASS_DISPLACE__'):
+            modifier = object.modifiers.get(modifier_name)
+            if modifier:
+                object.modifiers.remove(modifier)
+            
+        from . import property_panel_operator
+        
+        if len(object.data.vertices) < 1000:
+            # property_panel_operator.ATOOL_OT_add_camera_visibility_vertex_group.execute(self, context)
+            override = bl_utils.get_context_copy_with_object(context, object)
+            bpy.ops.atool.add_camera_visibility_vertex_group(override)
+            
+            object_copy = copy_object(object)
+            object_copy.data = object_copy.data.copy()
+            
+            # override = bl_utils.get_context_copy_with_object(context, object_copy)
+            # bpy.ops.object.mode_set(mode='OBJECT')
+            # bpy.ops.object.select_all(action='DESELECT')
+            
+            has_subsurf_modifier = False
+            for modifier in object_copy.modifiers:
+                if modifier.type == 'SUBSURF':
+                    modifier_name = modifier.name
+                    has_subsurf_modifier = True
+                    break
+                
+            if not has_subsurf_modifier:
+                modifier = object_copy.modifiers.new('__AT_ASS_SUBSURF__', 'SUBSURF')
+                modifier.show_expanded = False
+                modifier.subdivision_type = 'SIMPLE'
+                modifier.levels = self.subdivision_rate
+            
+            context.view_layer.objects.active = object_copy
+            bpy.ops.object.select_all(action='DESELECT')
+            object_copy.select_set(True)
+            bpy.ops.object.convert()
+            
+            # for modifier in object_copy.modifiers:
+            #     override = bl_utils.get_context_copy_with_object(context, object_copy)
+            #     bpy.ops.object.modifier_apply(override, modifier=modifier.name)
+            
+            # context.view_layer.objects.active = object_copy
+            # bpy.ops.object.modifier_apply(modifier="__AT_ASS_SUBSURF__")
+            
+            # depsgraph = context.evaluated_depsgraph_get()
+            # object_copy = object_copy.evaluated_get(depsgraph)
+            # object_copy.data = object_copy.to_mesh(depsgraph = depsgraph)
+
+            override = bl_utils.get_context_copy_with_object(context, object_copy)
+            bpy.ops.atool.add_camera_visibility_vertex_group(override)
+            # property_panel_operator.ATOOL_OT_add_camera_visibility_vertex_group.execute(self, context)
+            
+            modifier = object_copy.modifiers.new('__AT_ASS_MASK__', 'MASK')
+            modifier.show_expanded = False
+            modifier.vertex_group = 'camera_visibility'
+            if bpy.app.version >= (3,0,0):
+                modifier.use_smooth = True # this is necessary for some reason
+                
+            override = bl_utils.get_context_copy_with_object(context, object_copy)
+            bpy.ops.object.modifier_apply(override, modifier="__AT_ASS_MASK__")
+            
+            if not has_subsurf_modifier:
+                modifier = object.modifiers.new('__AT_ASS_SUBSURF__', 'SUBSURF')
+                modifier.show_expanded = False
+                modifier.subdivision_type = 'SIMPLE'
+                modifier.levels = self.subdivision_rate
+            
+            modifier = object.modifiers.new('__AT_ASS_DATA_TRANSFER__', 'DATA_TRANSFER')
+            modifier.show_expanded = False
+            modifier.object = object_copy
+            modifier.use_vert_data = True
+            modifier.data_types_verts = {'VGROUP_WEIGHTS'}
+            modifier.layers_vgroup_select_src = 'camera_visibility'
+            modifier.layers_vgroup_select_dst = 'camera_visibility'
+            
+            modifier = object.modifiers.new('__AT_ASS_DISPLACE__', 'DISPLACE')
+            modifier.show_expanded = False
+            modifier.vertex_group = "camera_visibility"
+            modifier.strength = -0.05
+            
+        else:
+            override = bl_utils.get_context_copy_with_object(context, object)
+            bpy.ops.atool.add_camera_visibility_vertex_group(override)
+            # property_panel_operator.ATOOL_OT_add_camera_visibility_vertex_group.execute(self, context)
+            
+            object_copy = copy_object(object)
+
+            modifier = object.modifiers.new('__AT_ASS_DISPLACE__', 'DISPLACE')
+            modifier.vertex_group = 'camera_visibility'
+            modifier.strength = -0.05
+
+            modifier = object_copy.modifiers.new('__AT_ASS_MASK__', 'MASK')
+            modifier.vertex_group = 'camera_visibility'
+            if bpy.app.version >= (3,0,0):
+                modifier.use_smooth = True
+                
+        context.view_layer.objects.active = initial_active_object
+                
+        for particle_system in particle_systems:
+            override = bl_utils.get_context_copy_with_object(context, object_copy)
+            bpy.ops.object.particle_system_add(override)
+            object_copy.particle_systems.active.settings = particle_system
+            
+        if particle_systems:
+            override = bl_utils.get_context_copy_with_object(context, object_copy)
+            bpy.ops.atool.match_displacement(override)    
+        
+        from . import shader_editor_operator
+        shader_editor_operator.ensure_adaptive_subdivision(self, context, object_copy, object_copy.active_material)
+        
+        return {'FINISHED'}

@@ -11,3 +11,9 @@ atool_updater/
 config.json
 __cache__.db
 es.exe
+__project__.json
+icon.png
+__icon__.png
+atool-main_updater/
+__project__*
+uf_*.json

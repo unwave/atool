@@ -10,6 +10,7 @@ import typing
 import threading
 import operator
 from timeit import default_timer as timer
+import subprocess
 
 import bpy
 from PIL import Image as pillow_image
@@ -19,60 +20,72 @@ import _bpy # type: ignore
 utils_previews = _bpy._utils_previews
 del _bpy
 
-try: 
+if __package__:
     from . import asset_parser
-    from . import type_definer
     from . import utils
     from . import bl_utils
     from . import image_utils
-    from . import view_3d_ui
-    from . import shader_editor_operator
-except: # for external testing
+else: # for external testing
     import asset_parser
     import utils
     import bl_utils
     import image_utils
-    import type_definer
-
+    
     # till i find a better way
-    # import view_3d_ui
     # import shader_editor_operator
 
+register = bl_utils.Register(globals())
+
+ID_CHARS = ''.join((string.ascii_lowercase, string.digits))
+PROHIBITED_TRAILING_SYMBOLS = ' *-~:'
+META_FILES = {'__icon__.png', '__info__.json', '__gallery__', '__extra__', '__archive__'}
+
 EMPTY_ITEM_LIST = [('/', "Empty :(", '＾-＾', 'GHOST_DISABLED', 0)]
-
 current_browser_items = EMPTY_ITEM_LIST
-current_search_query = None
-reading_time = 0
-
-PROHIBITED_TRAILING_SYMBOLS = " *-~:"
-
-META_FILES = {"__icon__.png", "__info__.json", "__gallery__", "__extra__", "__archive__"}
-SEARCH_SET_INFO = {"name", "url", "author", "tags", "system_tags"}
-
-
 def get_browser_items(self, context):
     return current_browser_items
 
+register.property(
+    'at_asset_previews',
+    bpy.props.EnumProperty(items=get_browser_items)
+)
+
+
 def update_search(wm, context):
-    search_query = wm.at_search
-    search_query.strip()
 
-    if current_search_query != search_query:
-        asset_data = wm.at_asset_data # type: AssetData
-        try: 
-            current_asset = asset_data.get(wm.at_asset_previews)
-        except: 
-            return # if data is not loaded yet
-        
-        wm["at_asset_previews"] = 0
-        wm["at_current_page"] = 1
+    asset_data = wm.at_asset_data # type: AssetData
+    try: 
+        current_asset = asset_data.get(wm.at_asset_previews)
+    except: 
+        return # if data is not loaded yet
+    
+    wm["at_asset_previews"] = 0
+    wm["at_current_page"] = 1
 
-        asset_data.search(search_query)
-        if current_asset in asset_data.search_result:
-            asset_data.go_to_page(asset_data.get_asset_page(current_asset))
-            wm["at_current_page"] = asset_data.current_page
-            wm.at_asset_previews = current_asset.id
+    asset_data.search(wm.at_search)
+    if current_asset in asset_data.search_result:
+        asset_data.go_to_page(asset_data.get_asset_page(current_asset))
+        wm["at_current_page"] = asset_data.current_page
+        wm.at_asset_previews = current_asset.id
 
+register.property(
+    'at_search', 
+    bpy.props.StringProperty(
+            name="", 
+            description= \
+            ':no_icon - with no preview \n'\
+            ':more_tags - less than 4 tags\n'\
+            ':no_url - with no url\n'\
+            ':i - intersection mode, default - subset\n'\
+            '-<tag> to exclude the tag\n'\
+            'id:<asset id> - find by id\n'\
+            '\n'\
+            'Auto added tags: blend, image, zip, sbsar, no_type',
+            update=update_search, 
+            default='',
+            options={'TEXTEDIT_UPDATE'}
+        )
+    )
 
 def update_page(wm, context):
     asset_data = wm.at_asset_data # type: AssetData
@@ -80,10 +93,20 @@ def update_page(wm, context):
     wm["at_current_page"] = asset_data.current_page
     wm["at_asset_previews"] = min(wm["at_asset_previews"], len(get_browser_items(None, None)) - 1)
 
+register.property(
+    'at_current_page',
+    bpy.props.IntProperty(name="Page", description="Page", update=update_page, min=1, default=1)
+)
+
 def update_assets_per_page(wm, context):
     wm["at_current_page"] = 1
     wm["at_asset_previews"] = 0
     wm.at_asset_data.set_assets_per_page(wm["at_assets_per_page"])
+
+register.property(
+    'at_assets_per_page',
+    bpy.props.IntProperty(name="Assets Per Page", update=update_assets_per_page, min=1, default=24, soft_max=104)
+)
 
 
 def update_string_info(property_name, id, info, context):
@@ -96,8 +119,7 @@ def update_string_info(property_name, id, info, context):
     if asset_to_update.info.get(property_name) != info[property_name]:
         asset_to_update.info[property_name] = info[property_name]
         asset_to_update.update_info()
-        global current_search_query
-        current_search_query = None
+        # context.window_manager.at_current_search_query = ''
         update_search(context.window_manager, None)
 
 def update_list_info(property_name, id, info, context):
@@ -111,8 +133,7 @@ def update_list_info(property_name, id, info, context):
     if set(asset_to_update.info[property_name]) != set(tag_list):
         asset_to_update.info[property_name] = tag_list
         asset_to_update.update_info()
-        global current_search_query
-        current_search_query = None
+        # context.window_manager.at_current_search_query = ''
         update_search(context.window_manager, None)
 
 def update_id(info, context):
@@ -120,22 +141,28 @@ def update_id(info, context):
     try:
         wm = context.window_manager
         current_id = wm.at_asset_previews
-        asset_data: AssetData
         asset_data = wm.at_asset_data # type: AssetData
         asset_data[current_id]
     except:
         info["id"] = ""
         return
 
-    info["id"] = utils.get_slug(info["id"])
-    if current_id != info["id"]:
-        global current_search_query
-        current_search_query = None
-        new_id = asset_data.reload_asset(current_id, context, new_id = info["id"])
-        if asset_data[new_id] in asset_data.search_result:
-            asset_data.go_to_page(asset_data.get_asset_page(asset_data[new_id]))
-            wm["at_current_page"] = asset_data.current_page
-            wm.at_asset_previews = new_id
+    new_id = info["id"] = info["id"].strip()
+    if new_id == current_id:
+        return
+    
+    slug = utils.get_slug(new_id)
+    info["id"] = slug
+    if slug == current_id:
+        return
+    
+    # context.window_manager.at_current_search_query = ''
+    new_id = asset_data.reload_asset(current_id, context, new_id = slug)
+    
+    if asset_data[new_id] in asset_data.search_result: # focus
+        asset_data.go_to_page(asset_data.get_asset_page(asset_data[new_id]))
+        wm["at_current_page"] = asset_data.current_page
+        wm.at_asset_previews = new_id
 
 def update_dimension(property_name, id, info, context):
     try:
@@ -158,8 +185,7 @@ def update_dimension(property_name, id, info, context):
         asset_to_update.info['dimensions'][property_name] = info[property_name]
         asset_to_update.update_info()
 
-        global current_search_query
-        current_search_query = None
+        # context.window_manager.at_current_search_query = ''
         update_search(context.window_manager, None)
 
 def get_updater(property_name, function):
@@ -184,6 +210,10 @@ class ATOOL_PROP_browser_asset_info(bpy.types.PropertyGroup):
     y: bpy.props.FloatProperty(name='Y', update=get_updater("y", update_dimension), min = 0, default = 1)
     z: bpy.props.FloatProperty(name='Z', update=get_updater("z", update_dimension), min = 0, default = 0.1)
 
+register.property(
+    'at_browser_asset_info',
+    bpy.props.PointerProperty(type=ATOOL_PROP_browser_asset_info)
+)
 
 def get_string_corrector(property_name):
     def updater(info, context):
@@ -202,18 +232,36 @@ class ATOOL_PROP_template_info(bpy.types.PropertyGroup):
     author_url: bpy.props.StringProperty(name='Author URL') # need url checker
     licence: bpy.props.StringProperty(name='Licence', update=get_string_corrector("licence"))
     licence_url: bpy.props.StringProperty(name='Licence URL') # need url checker
-    
 
     do_move_images: bpy.props.BoolProperty(name="Move Images", default = True, description="Move used images to the asset")
-    # do_move_sub_asset: bpy.props.BoolProperty(name="Move Sub Assets", default = False, description="Move used sub assets to the asset")
+    do_move_sub_assets: bpy.props.BoolProperty(name="Move Sub Assets", default = False, description="Move used sub assets to the asset")
 
+register.property(
+    'at_template_info',
+    bpy.props.PointerProperty(type=ATOOL_PROP_template_info)
+)
+
+SEARCH_SET_INFO = {'name', 'url', 'author', 'tags', 'system_tags'}
+SEARCH_SET_INFO_INFLECTABLE = {'name', 'tags', 'url', 'system_tags'}
+
+BASIC_TYPE_ATTRS = {'name', 'url', 'author', 'path', 'id', 'ctime', 'mtime'}
+STRING_TYPE_ATTRS = {'name', 'url', 'author', 'path', 'id'}
 
 class Asset:
+    name: str
+    url: str
+    author: str
+    tags: typing.List[str]
+    system_tags: typing.List[str]
+    system_tags_mtime: float
+    ctime: float
+    
     def __init__(self, path: os.DirEntry):
         self.info: dict
         self.path: str
         self.preview = None
         self.path = path.path
+        self.id: str
         self.id = path.name.lower()
         self.json_path = os.path.join(self.path, "__info__.json")
         self.gallery = os.path.join(self.path, "__gallery__")
@@ -248,7 +296,10 @@ class Asset:
     
     def __getitem__(self, key):
         return self.info[key]
-
+    
+    def __getattr__(self, key):
+        return self.info[key] if key in self.info else super().__getattribute__(key)
+    
     def get(self, key, default = None):
         return self.info.get(key, default)
 
@@ -268,18 +319,25 @@ class Asset:
     @classmethod
     def default(cls, path: os.DirEntry): # type: (os.DirEntry) -> Asset
         asset = cls(path)
+        
+        global json_reading_time
+        start = timer()
+
         try:
-            global reading_time
-            start = timer()
             with open(asset.json_path, "r", encoding='utf-8') as json_file:
                 asset.info = json.load(json_file)
-            reading_time += timer() - start
         except:
             if os.path.exists(asset.json_path):
-                os.rename(asset.json_path, asset.json_path + "@error_" + utils.get_time_stamp())
+                os.rename(asset.json_path, utils.ensure_unique_path(asset.json_path + "@error_" + utils.get_time_stamp()))
             asset.info = asset.get_empty_info()
             with open(asset.json_path, 'w', encoding='utf-8') as json_file:
                 json.dump(asset.info, json_file, indent=4, ensure_ascii=False)
+                
+            import traceback
+            traceback.print_exc()
+            
+        json_reading_time += timer() - start
+        
 
         asset.standardize_info()
 
@@ -289,17 +347,14 @@ class Asset:
         return asset
 
     @classmethod
-    def remout(cls, path: str): # type: (str) -> Asset
+    def remote(cls, path: str): # type: (str) -> Asset
         asset = cls(path)
+        
         try:
             with open(asset.json_path, "r", encoding='utf-8') as json_file:
                 asset.info = json.load(json_file)
         except:
-            if os.path.exists(asset.json_path):
-                os.rename(asset.json_path, asset.json_path + "@error_" + utils.get_time_stamp())
-            asset.info = asset.get_empty_info()
-            with open(asset.json_path, 'w', encoding='utf-8') as json_file:
-                json.dump(asset.info, json_file, indent=4, ensure_ascii=False)
+            return None
 
         asset.standardize_info()
 
@@ -429,16 +484,16 @@ class Asset:
                                 info["description"] = description
 
 
-        # if sketchfab asset --> use folder structure and try to utilize info about the scene
+        # if SketchFab asset --> use folder structure and try to utilize info about the scene
 
         if not preview:
             if not files.get_by_type("__icon__"):
-                posible_icons = [file for file in files.get_by_extension(('.png', '.jpg', '.jpeg')) if not file.is_meta]
-                if not posible_icons:
+                possible_icons = [file for file in files.get_by_extension(('.png', '.jpg', '.jpeg')) if not file.is_meta]
+                if not possible_icons:
                     # render asset's preview
                     pass
-                if len(posible_icons) == 1:
-                    preview = posible_icons[0]
+                if len(possible_icons) == 1:
+                    preview = possible_icons[0]
         
         if preview:
             utils.move_to_folder(preview, gallery_folder)
@@ -487,131 +542,149 @@ class Asset:
         }
         return info
 
+    @utils.synchronized
     def move_to_folder(self, path_or_paths: typing.Union[str, typing.Iterable[str]], subfolder = None):
-        with self.lock:
+        if subfolder:
+            os.makedirs(os.path.join(self.path, subfolder), exist_ok = True)
+
+        if isinstance(path_or_paths, str):
             if subfolder:
-                os.makedirs(os.path.join(self.path, subfolder), exist_ok = True)
-
-            if isinstance(path_or_paths, str):
-                if subfolder:
-                    new_path = os.path.join(self.path, subfolder, os.path.basename(path_or_paths))
-                else:
-                    new_path = os.path.join(self.path, os.path.basename(path_or_paths))
-                shutil.move(path_or_paths, new_path)
+                new_path = os.path.join(self.path, subfolder, os.path.basename(path_or_paths))
             else:
-                for path in path_or_paths:
-                    if subfolder:
-                        new_path = os.path.join(self.path, subfolder, os.path.basename(path))
-                    else:
-                        new_path = os.path.join(self.path, os.path.basename(path))
-                    shutil.move(path, new_path)
+                new_path = os.path.join(self.path, os.path.basename(path_or_paths))
+            shutil.move(path_or_paths, new_path)
+        else:
+            for path in path_or_paths:
+                if subfolder:
+                    new_path = os.path.join(self.path, subfolder, os.path.basename(path))
+                else:
+                    new_path = os.path.join(self.path, os.path.basename(path))
+                shutil.move(path, new_path)
 
-            self.update_system_tags()
+        self.update_system_tags()
 
+    @utils.synchronized
     def update_system_tags(self, do_force_update=False):
-        with self.lock:
-            mtime = os.path.getmtime(self.path)
-            if mtime > self.info.get("system_tags_mtime", 0) or do_force_update:
 
-                # ???
-                os.makedirs(self.gallery, exist_ok=True)
-
-                if not os.path.exists(self.icon):
-                    self.generate_icon_from_gallery()
-
-                extensions = {os.path.splitext(file.name)[1].lower() for file in os.scandir(self.path) if file.name not in META_FILES}
-
-                system_tags = []
-
-                if ".blend" in extensions:
-                    system_tags.append("blend")
-                
-                if not extensions.isdisjoint(utils.IMAGE_EXTENSIONS):
-                    system_tags.append("image")
-
-                if ".zip" in extensions:
-                    system_tags.append("zip")
-
-                if ".sbsar" in extensions:
-                    system_tags.append("sbsar")
-
-                if not self.info["system_tags"]:
-                    system_tags.append("no_type")
-
-                self.info["system_tags"] = system_tags
-                self.update_info({"system_tags_mtime": mtime})
-
-                return True
+        mtime = os.path.getmtime(self.path)
+        if not (mtime > self.info.get("system_tags_mtime", 0) or do_force_update):
             return False
 
+        # ???
+        os.makedirs(self.gallery, exist_ok=True)
+
+        if not os.path.exists(self.icon):
+            self.generate_icon_from_gallery()
+
+        extensions = {os.path.splitext(file.name)[1].lower() for file in os.scandir(self.path) if file.name not in META_FILES}
+
+        system_tags = []
+
+        if ".blend" in extensions:
+            system_tags.append("blend")
+        
+        if not extensions.isdisjoint(utils.IMAGE_EXTENSIONS):
+            system_tags.append("image")
+
+        if ".zip" in extensions:
+            system_tags.append("zip")
+
+        if ".sbsar" in extensions:
+            system_tags.append("sbsar")
+
+        if not self.info["system_tags"]:
+            system_tags.append("no_type")
+
+        self.info["system_tags"] = system_tags
+        self.update_info({"system_tags_mtime": mtime})
+
+        return True
+
+    @utils.synchronized
     def update_search_set(self):
-        with self.lock:
-            search_set = []
-            for key, value in self.info.items():
-                if not value or key not in SEARCH_SET_INFO:
-                    continue
-                if isinstance(value, list):
-                    search_set.extend([subvalue.lower() for subvalue in value])
-                else:
-                    search_set.extend(value.lower().split())
-            self.search_set = set(search_set)
-            self.ctime = os.path.getctime(self.json_path)
+        
+        self.search_name = ''
+        search_set = []
+        for key, value in self.info.items():
+            
+            if not value or key not in SEARCH_SET_INFO:
+                continue
+            
+            if type(value) == str:
+                self.search_name += value
+            elif type(value) == list:
+                self.search_name += ' '.join(value)
+            
+            if type(value) != list:
+                value = utils.split(value)
+                
+            if key in SEARCH_SET_INFO_INFLECTABLE:
+                search_set.extend(utils.singularize(subvalue.lower()) for subvalue in value)
+                search_set.extend(utils.pluralize(subvalue.lower()) for subvalue in value)
 
+            search_set.extend(subvalue.lower() for subvalue in value)
+                
+        self.search_set = set(search_set)
+        self.ctime = self.get('ctime', os.path.getctime(self.json_path))
+
+    @utils.synchronized
     def generate_icon_from_gallery(self):
-        with self.lock:
-            for file in [item for item in os.scandir(self.gallery) if item.is_file() and item.name.lower().endswith(tuple(utils.IMAGE_EXTENSIONS))]:
-                with pillow_image.open(file.path) as image:
-                    icon_path = image_utils.save_as_icon(image, self.path)
-                    self.icon = icon_path
-                    return icon_path
-            return None
+        for file in [item for item in os.scandir(self.gallery) if item.is_file() and item.name.lower().endswith(tuple(utils.IMAGE_EXTENSIONS))]:
+            with pillow_image.open(file.path) as image:
+                icon_path = image_utils.save_as_icon(image, self.path)
+                self.icon = icon_path
+                return icon_path
+        return None
 
-    def update_info(self, info = None):
+    @utils.synchronized
+    def update_info(self, info = None, update = True):
         """ if `info` is `None` when only the json updates"""
-        with self.lock:
-            if info:
-                for key, value in info.items():
-                    current_value = self.info.get(key)
-                    if current_value:
-                        if isinstance(current_value, list):
-                            for subvalue in value:
-                                if subvalue not in current_value:
-                                    current_value.append(subvalue)
-                        elif isinstance(current_value, dict):
-                            current_value.update(value)
-                        else:
-                            self.info[key] = value
+        if info:
+            for key, value in info.items():
+                current_value = self.info.get(key)
+                if current_value:
+                    if isinstance(current_value, list):
+                        for subvalue in value:
+                            if subvalue not in current_value:
+                                current_value.append(subvalue)
+                    elif isinstance(current_value, dict):
+                        current_value.update(value)
                     else:
                         self.info[key] = value
+                else:
+                    self.info[key] = value
 
-            with open(self.json_path, 'r+', encoding='utf-8') as json_file:
-                old_json = json.load(json_file)
-                old_json.update(self.info)
-                json_file.seek(0)
-                json.dump(old_json, json_file, indent=4, ensure_ascii=False)
-                json_file.truncate()
+        with open(self.json_path, 'r+', encoding='utf-8') as json_file:
+            data = json.load(json_file)
+            if update:
+                data.update(self.info)
+            else:
+                data = self.info
+            json_file.seek(0)
+            json.dump(data, json_file, indent=4, ensure_ascii=False)
+            json_file.truncate()
 
-            self.update_search_set()
+        self.update_search_set()
 
+    @utils.synchronized
     def extract_zips(self):
-        with self.lock:
-            zip_paths = [file for file in os.scandir(self.path) if os.path.splitext(file.name)[1] == ".zip"]
+        zip_paths = [file for file in os.scandir(self.path) if os.path.splitext(file.name)[1] == ".zip"]
 
-            if not zip_paths:
-                return []
+        if not zip_paths:
+            return []
 
-            self.extra = os.path.join(self.path, "__extra__")
-            os.makedirs(self.extra, exist_ok=True)
+        self.extra = os.path.join(self.path, "__extra__")
+        os.makedirs(self.extra, exist_ok=True)
 
-            extracted_files = []
-            for zip_path in zip_paths:
-                extracted_files.extend(utils.extract_zip(zip_path))
-                os.rename(zip_path, os.path.join(self.extra, os.path.basename(zip_path)))
+        extracted_files = []
+        for zip_path in zip_paths:
+            extracted_files.extend(utils.extract_zip(zip_path))
+            os.rename(zip_path, os.path.join(self.extra, os.path.basename(zip_path)))
 
-            self.info["system_tags"].remove("zip")
-            self.update_search_set()
+        self.info["system_tags"].remove("zip")
+        self.update_search_set()
 
-            return extracted_files
+        return extracted_files
 
     def get_files(self, path = None, recursive = False) -> typing.List[os.DirEntry]:
         if not path:
@@ -626,7 +699,7 @@ class Asset:
                     files.extend(self.get_files(path = file.path, recursive = recursive))
         return files
 
-    def get_imags(self, path = None, recursive = False, as_string = True):
+    def get_images(self, path = None, recursive = False, as_string = True):
         files = self.get_files(path = path, recursive = recursive)
         image_extensions = tuple(utils.IMAGE_EXTENSIONS)
         if as_string:
@@ -636,76 +709,95 @@ class Asset:
 
     @property
     def blend(self):
-        return utils.get_last_file(self.path, ".blend")
+        return utils.get_last_file(self.path, ".blend", recursively = False)
 
+    @property
+    def is_blend(self):
+        for file in os.scandir(self.path):
+            if file.is_file() and file.name.lower().endswith('.blend'):
+                return True
+        return False
+
+    @utils.synchronized
     def get_web_info(self, context):
-        with self.lock:
-            url = self.info.get("url")
-            if not url:
-                return "No url."
+        url = self.info.get("url")
+        if not url:
+            return "No url."
 
-            is_ok, result = asset_parser.get_web(url)
+        is_ok, result = asset_parser.get_web(url)
 
-            if is_ok:
-                self.update_info(result)
-                view_3d_ui.update_ui()
-                update_search(context.window_manager ,context)
-                print("The info has been updated.")
-                return "The info has been updated."
-            else:
-                print(result)
-                return result
-
+        if is_ok:
+            self.update_info(result)
+            context.window_manager.current_browser_asset_id = ''
+            update_search(context.window_manager ,context)
+            print("The info has been updated.")
+            return "The info has been updated."
+        else:
+            print(result)
+            return result
+    
+    @property
+    def mtime(self):
+        return max(os.path.getmtime(self.json_path), os.path.getmtime(self.path))
 
 class AssetData(typing.Dict[str, Asset], dict):
 
-    def __init__(self, library: str = None, auto: str = None, background = False):
+    def __init__(self, library: str = None, auto: str = None, background = bpy.app.background):
 
-        if background:
-            self.background_init(library)
-        else:
-            self.default_init(library, auto)
-
-        self.id_chars = "".join((string.ascii_lowercase, string.digits))
-        self.re_compile()
-
-    def default_init(self, library, auto):
-
+        self.library: str = None
+        self.auto: str = None
         if library:
-            if not os.path.exists(library):
-                print("The specified library path does not exist.")
-                library = None
-        self.library = library
-
+            self.check_path(library, 'library')
         if auto:
-            if not os.path.exists(auto):
-                print("The specified auto-folder path does not exist.")
-                auto = None
-        self.auto = auto
+            self.check_path(auto, 'auto')
 
-        config = utils.read_local_file("config.json")
-        if config:
-            for attr in ('library', 'auto'):
-                value = config.get(attr)
-                if value and os.path.exists(value) and os.path.isdir(value):
-                    setattr(self, attr, value)
-
+        self.re_compile()
         self.search_result = []
         self.number_of_pages = 1
         self.current_page = 1
         self.assets_per_page = 24
 
-    def background_init(self, library):
-        self.library = library
-        self.update_library()
+        self.asset_paths = set()
+        self.asset_by_path = {}
+
+        self.lock = threading.RLock()
+
+    def check_path(self, path: str, type: str):
+
+        if path and os.path.exists(path):
+            setattr(self, type, path)
+            return
+
+        config = utils.read_local_file("config.json")
+        if config:
+            value = config.get(type)
+            if value and os.path.isdir(value) and os.path.exists(value):
+                setattr(self, type, value)
+                print(f"Fallback to config for {type} path.")
+                return
+
+        print(f"No valid {type} path is specified.")
 
     def __setitem__(self, key: str, value: Asset):
         dict.__setitem__(self, key.lower(), value)
+        self.asset_paths.add(value.path)
+        self.asset_by_path[value.path] = value
+
+    def __delitem__(self, key: str):
+        path = self[key].path
+        dict.__delitem__(self, key.lower())
+        self.asset_paths.remove(path)
+        self.asset_by_path.pop(path)
 
     def __getitem__(self, key: str) -> Asset:
         return dict.__getitem__(self, key.lower())
 
+    @utils.synchronized
     def update(self, context):
+
+        addon_preferences = context.preferences.addons[__package__].preferences
+        self.check_path(addon_preferences.library_path, 'library')
+        self.check_path(addon_preferences.auto_path, 'auto')
 
         if not self.library:
             return
@@ -713,26 +805,37 @@ class AssetData(typing.Dict[str, Asset], dict):
         start = timer()
 
         self.update_library(context)
+        self.update_auto(context)
+        # self.update_remote()
 
-        if self.auto:
-            self.update_auto(context)
-
-        # self.update_remout()
-
-        print(f"JSON reading time:\t {reading_time:.2f} sec")
         print(f"Asset import time:\t {timer() - start:.2f} sec")
 
+    @utils.synchronized
     def update_library(self, context = None):
+        if not self.library:
+            return
+        
         self.clear()
+        
+        global json_reading_time
+        json_reading_time = 0
+        
         for folder in bl_utils.iter_with_progress(list(os.scandir(self.library)), prefix='Loading Assets'):
             if folder.is_dir():
                 self[folder.name] = Asset.default(folder)
+                
+        print(f"JSON reading time:\t {json_reading_time:.2f} sec")
 
         if not bpy.app.background and context:
             wm = context.window_manager
-            wm.at_search = wm.at_search
+            if hasattr(wm, 'at_search'):
+                wm.at_search = wm.at_search
 
+    @utils.synchronized
     def update_auto(self, context = None):
+        if not self.auto:
+            return
+
         for file in bl_utils.iter_with_progress(list(os.scandir(self.auto)), prefix='Auto Importing Assets'):
             if not file.name.lower().endswith(utils.URL_EXTENSIONS):
                 id, asset = Asset.auto(file, self.library)
@@ -740,55 +843,46 @@ class AssetData(typing.Dict[str, Asset], dict):
 
         if not bpy.app.background and context:
             wm = context.window_manager
-            wm.at_search = wm.at_search
+            if hasattr(wm, 'at_search'):
+                wm.at_search = wm.at_search
 
-    def update_remout(self):
+    def update_remote(self):
         pass
     
     def re_compile(self):
-        self.re_id = re.compile(r"id:([^\\\\\/:*?\"<>|]+)$", flags=re.IGNORECASE)
-
-        self.re_no_icon = re.compile(r":no_icon", flags=re.IGNORECASE)
-        self.re_more_tags = re.compile(r":more_tags", flags=re.IGNORECASE)
-        self.re_no_url = re.compile(r":no_url", flags=re.IGNORECASE)
-        self.re_is_intersection = re.compile(r":i", flags=re.IGNORECASE)
-
-        self.re_exclude = re.compile(r"-([a-z0-9_-]+$)", flags=re.IGNORECASE)
-        self.re_include = re.compile(r"[a-z0-9_-]+$", flags=re.IGNORECASE)
-
-        self.re_bad_id = re.compile(r":bad_id", flags=re.IGNORECASE)
+        self.re_id = re.compile(r'id:"(.+)"$|id:(.+)$', flags=re.IGNORECASE)
+        self.re_sort = re.compile(r"(?:sort|s):([a-z_]+)(:rev)?", flags=re.IGNORECASE)
         self.re_bad_id_string = re.compile(r"^[a-zA-Z0-9]+$" , flags=re.IGNORECASE)
+        self.re_query_fragment = re.compile(r'\S+".+?"|\S+', flags=re.IGNORECASE)
 
     def get_result(self, query):
-        """
-        `:no_icon` - with no preview \n
-        `:more_tags` - less than 4 tags\n
-        `:no_url` - with no url\n
-        `:i` - intersection mode, default - subset\n
-        `id:<asset id>` - find by id
-        """
+        """ See the `at_search: bpy.props.StringProperty` definition"""
         
         assets = list(self.values())
         if not assets:
             return []
 
         assets.sort(key=operator.attrgetter('ctime'), reverse=True)
-        # assets.sort(key=operator.attrgetter('id'))
 
         if not query:
             return assets
 
-        query = query.lower().strip().split()
+        query = self.re_query_fragment.findall(query.lower().strip()) # type: typing.List[str]
         exclude = []
         include = []
+        sort_stack = []
         only_certain_ids = False
         is_intersection = False
+        is_partial = True
 
         for fragment in query:
 
             match = self.re_id.match(fragment)
             if match:
                 id = match.group(1)
+                if not id:
+                    id = match.group(2)
+                    
                 asset = self.get(id)
                 if not only_certain_ids:
                     assets = []
@@ -797,47 +891,78 @@ class AssetData(typing.Dict[str, Asset], dict):
                 only_certain_ids = True
                 continue
 
-            if self.re_no_icon.match(fragment):
+            if fragment == ':no_icon':
                 assets = [asset for asset in assets if not os.path.exists(asset.icon)]
                 continue
 
-            if self.re_more_tags.match(fragment):
+            if fragment == ':more_tags':
                 assets = [asset for asset in assets if len(asset.info["tags"]) < 4]
+                assets.sort(key = lambda asset: len(asset.info["tags"]), reverse = True)
                 continue
 
-            if self.re_no_url.match(fragment):
+            if fragment == ':no_url':
                 assets = [asset for asset in assets if not asset.info["url"]]
                 continue
 
-            if self.re_bad_id.match(fragment):
+            if fragment == ':bad_id':
                 assets = [asset for asset in assets if len(asset.id) == 11 and self.re_bad_id_string.match(asset.id)]
                 continue
 
-            if self.re_is_intersection.match(fragment):
+            if fragment == ':i':
                 is_intersection = True
                 continue
-
-            match = self.re_exclude.match(fragment)
-            if match:
-                exclude.append(match.group(1))
+            
+            if fragment == ':w':
+                is_partial = False
                 continue
-
-            match = self.re_include.match(fragment)
+            
+            match = self.re_sort.match(fragment)
             if match:
-                include.append(match.group(0))
+                
+                sort_by = match.group(1)
+                if not sort_by in BASIC_TYPE_ATTRS:
+                    continue
+                
+                do_reverse = not bool(match.group(2))
+                sort_stack.append((sort_by, do_reverse))
                 continue
+            
+            if fragment.startswith('-'):
+                exclude.append(fragment[1:])
+                continue
+            
+            include.append(fragment)
+            
+        def sort_assets(assets: list):
+            for sort_by, do_reverse in sort_stack:
+                
+                if sort_by in STRING_TYPE_ATTRS:
+                    assets.sort(key = lambda x: getattr(x, sort_by).lower(), reverse = not do_reverse)
+                    continue
+                
+                assets.sort(key=operator.attrgetter(sort_by), reverse = do_reverse)
         
         exclude = set(exclude)
         include = set(include)
 
-        if is_intersection:
-            assets = [asset for asset in assets if (not include.isdisjoint(asset.search_set) or not include) and exclude.isdisjoint(asset.search_set)]
-            assets.sort(key=lambda asset: len(include.intersection(asset.search_set)), reverse = True)
+        if is_partial:
+            if is_intersection:
+                assets = [asset for asset in assets if any(fragment in asset.search_name for fragment in include) and exclude.isdisjoint(asset.search_set)]
+            else:
+                assets = [asset for asset in assets if all(fragment in asset.search_name for fragment in include) and exclude.isdisjoint(asset.search_set)]
+        
+            assets.sort(key=lambda asset: sum(fragment in asset.search_name for fragment in include), reverse = True)
         else:
-            assets = [asset for asset in assets if include.issubset(asset.search_set) and exclude.isdisjoint(asset.search_set)]
+            if is_intersection:
+                assets = [asset for asset in assets if (not include.isdisjoint(asset.search_set) or not include) and exclude.isdisjoint(asset.search_set)]
+            else:
+                assets = [asset for asset in assets if include.issubset(asset.search_set) and exclude.isdisjoint(asset.search_set)]
+                
+            assets.sort(key=lambda asset: len(include.intersection(asset.search_set)), reverse = True)
             
-        return assets
+        sort_assets(assets)
 
+        return assets
 
     def search(self, search_query):
         self.current_page = 1
@@ -911,7 +1036,7 @@ class AssetData(typing.Dict[str, Asset], dict):
         ids = {f.name for f in os.scandir(self.library)} | set(self.keys())
 
         while True:
-            id = ''.join(random.choice(self.id_chars) for _ in range(11))
+            id = ''.join(random.choice(ID_CHARS) for _ in range(11))
             if not id in ids:
                 return id
 
@@ -950,6 +1075,7 @@ class AssetData(typing.Dict[str, Asset], dict):
         space_data.show_region_toolbar = initial_show_region_toolbar
         space_data.show_region_ui = initial_show_region_ui
 
+    @utils.synchronized
     def add_to_library(self, context, objects: typing.List[bpy.types.Object], info: dict):
 
         id = utils.get_slug(info.get("name", "")).strip('-_')
@@ -965,6 +1091,7 @@ class AssetData(typing.Dict[str, Asset], dict):
             info["name"] = id.replace('_', ' ')
 
         do_move_images = info.pop('do_move_images')
+        do_move_sub_assets = info.pop('do_move_sub_assets')
 
         asset = Asset.new(asset_folder)
         asset.update_info(info)
@@ -976,6 +1103,8 @@ class AssetData(typing.Dict[str, Asset], dict):
         argv = []
         if do_move_images:
             argv.append('-move_textures')
+        if do_move_sub_assets:
+            argv.append('-move_sub_assets')
         bl_utils.run_blender(blend_file_path, initialize_asset, argv, use_atool=True, library_path=self.library)
 
         self[id] = asset
@@ -986,6 +1115,7 @@ class AssetData(typing.Dict[str, Asset], dict):
 
         return id, blend_file_path
 
+    @utils.synchronized
     def add_files_to_library(self, context, files, info: dict):
         
         id = utils.get_slug(info.get("name", "")).strip('-_')
@@ -1025,19 +1155,14 @@ class AssetData(typing.Dict[str, Asset], dict):
 
         return id
 
-    def reload_asset(self, id, context, do_reimport=False, new_id = None):
+    @utils.synchronized
+    def reload_asset(self, id: str, context: bpy.types.Context = None, do_reimport = False, new_id = None) -> str:
         asset_folder = self[id].path
         del self[id]
 
         if new_id:
-            number = 2
             new_path = os.path.join(self.library, new_id)
-            while True:
-                if os.path.exists(new_path):
-                    new_path = os.path.join(self.library, new_id + f"_{number}")
-                    number += 1
-                else:
-                    break
+            new_path = utils.ensure_unique_path(new_path)
             os.rename(asset_folder, new_path)
             asset_folder = new_path
 
@@ -1049,13 +1174,15 @@ class AssetData(typing.Dict[str, Asset], dict):
                 asset = Asset.default(utils.PseudoDirEntry(asset_folder))
                 id = asset.id
                 self[id] = asset
- 
-        asset.reload_preview(context)
-        view_3d_ui.update_ui()
-        update_search(context.window_manager, context)
+
+        if context:
+            asset.reload_preview(context)
+            context.window_manager.current_browser_asset_id = ''
+            update_search(context.window_manager, context)
 
         return id
 
+    @utils.synchronized
     def web_get_asset(self, url, context):
 
         id = self.get_new_id()
@@ -1070,6 +1197,7 @@ class AssetData(typing.Dict[str, Asset], dict):
         id = result.get("id")
         if id:
             new_asset_path = os.path.join(self.library, id)
+            new_asset_path = utils.ensure_unique_path(new_asset_path)
             os.rename(asset_folder, new_asset_path)
             asset_folder = new_asset_path
         preview_path = result.pop("preview_path", None)
@@ -1085,7 +1213,7 @@ class AssetData(typing.Dict[str, Asset], dict):
         self[id] = asset
 
         update_search(context.window_manager, context)
-        view_3d_ui.update_ui()
+        context.window_manager.current_browser_asset_id = ''
 
         return True, id
 
@@ -1110,8 +1238,12 @@ class AssetData(typing.Dict[str, Asset], dict):
             }
             jobs['objects'] = [job]
         else:
-            images = asset.get_imags()
+            images = asset.get_images()
             if images:
+                
+                from . import shader_editor_operator
+                type_definer_config = shader_editor_operator.get_definer_config(context)
+                type_definer_config.set_common_prefix_from_paths(images)
 
                 invert_normal_y = False
                 material_settings = asset.get('material_settings') # type: dict
@@ -1120,23 +1252,16 @@ class AssetData(typing.Dict[str, Asset], dict):
 
                 invert_normal_y_dict = {image: invert_normal_y for image in images}
 
-                # terrable
-                disp_min_max_mult = 1
+                multiplier = 1
                 for image in images:
-                    type = type_definer.get_type(image)
-                    if 'displacement' in type:
-                        image = image_utils.Image(image)
-                        image.type = type
-                        file_info = asset.get("file_info")
-                        if not file_info:
-                            asset["file_info"] = file_info = {}
-                        image.process(file_info = file_info)
+                    image = image_utils.Image.from_asset_info(image, asset.info, type_definer_config = type_definer_config)
+                    if 'displacement' in image.type:
                         for channel, subtype in image.iter_type():
                             if subtype == 'displacement':
-                                min_max = image.min_max.get(channel)
-                                disp_min_max_mult = 1/abs(min_max[1] - min_max[0])
+                                min_max = image.get_min_max(channel)
+                                multiplier = 1/abs(min_max[1] - min_max[0])
+                        image.update_source()
                         asset.update_info()
-                        
 
                 displacement_scale = 0.1
                 dimensions = asset.get('dimensions')
@@ -1147,8 +1272,8 @@ class AssetData(typing.Dict[str, Asset], dict):
                     if z:
                         z /= min((x, y))
                         displacement_scale = z
-                displacement_scale *= 1.9213 # sphere uv_multiplier 
-                displacement_scale *= disp_min_max_mult
+                displacement_scale *= 1.9213 # sphere uv_multiplier
+                displacement_scale *= multiplier
 
                 job = {
                     'result_path': result_path,
@@ -1156,30 +1281,48 @@ class AssetData(typing.Dict[str, Asset], dict):
                     'invert_normal_y': invert_normal_y_dict,
                     'displacement_scale': displacement_scale
                 }
-                jobs['type_definer_config'] = shader_editor_operator.get_definer_config(context)
+                
+                jobs['type_definer_config'] = type_definer_config.dict
                 jobs['materials'] = [job]
 
         if not jobs:
             return
 
-        jobs_path = os.path.join(bpy.app.tempdir, 'atool_icon_render_jobs.json')
-
+        jobs_path = utils.ensure_unique_path(os.path.join(bpy.app.tempdir, 'atool_icon_render_jobs.json'))
         with open(jobs_path, 'w', encoding='utf-8') as jobs_file:
             json.dump(jobs, jobs_file, indent = 4, ensure_ascii = False)
 
-        initialize_asset = utils.get_script('render_icon.py')
+        render_icon = utils.get_script('render_icon.py')
         argv = ['-jobs_path', f'"{jobs_path}"' if " " in jobs_path else jobs_path]
-        bl_utils.run_blender(script = initialize_asset, argv = argv, use_atool=True, library_path=self.library)
+        bl_utils.run_blender(script = render_icon, argv = argv, use_atool=True, library_path=self.library, stdout = subprocess.DEVNULL)
 
         print(f"An icon for the asset '{asset.id}' has been updated.")
         asset.reload_preview(context)
 
     def is_sub_asset(self, path):
-        if os.path.commonpath((path, self.library)) == self.library:
-            return True
-        # remout = [asset.path for asset in self.values() if asset.is_remout]
-        return False
+        path = bl_utils.abspath(path)
 
+        if os.path.isfile(path):
+            path = os.path.dirname(path)
+
+        if utils.get_path_set(path).isdisjoint(self.asset_paths):
+            return False
+        
+        return True
+
+    def get_asset_by_path(self, path) -> Asset:
+        path = bl_utils.abspath(path)
+
+        if os.path.isfile(path):
+            path = os.path.dirname(path)
+
+        intersection = utils.get_path_set(path).intersection(self.asset_paths)
+        if not intersection:
+            return None
+
+        return self.asset_by_path[max(intersection, key = len)]
+
+    @utils.synchronized
     def move_asset_to_desktop(self, id, context):
 
         asset_folder = self[id].path
@@ -1188,4 +1331,37 @@ class AssetData(typing.Dict[str, Asset], dict):
         del self[id]
 
         update_search(context.window_manager, context)
-        view_3d_ui.update_ui()
+        context.window_manager.current_browser_asset_id = ''
+
+    def get_assets_from_objects(self, objects) -> typing.Dict[bpy.types.Object, typing.List[Asset]]:
+        
+        def get_asset_by_path(path, assets = {}) -> Asset:
+
+            asset = assets.get(path)
+            if asset:
+                return asset
+
+            assets[path] = asset = self.get_asset_by_path(path)
+            return asset
+        
+        dependencies = bl_utils.Dependency_Getter()
+
+        result = {} # type: typing.Dict[bpy.types.Object, typing.List[Asset]]
+        for object in objects:
+
+            assets = []
+            for dependency in dependencies.get_object_dependencies_by_type(object):
+                asset = get_asset_by_path(bl_utils.get_block_abspath(dependency))
+                if asset:
+                    assets.append(asset)
+
+            if assets:
+                result[object] = utils.deduplicate(assets)
+                
+        return result
+        
+
+register.property(
+    'at_asset_data',
+    AssetData()
+)

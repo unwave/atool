@@ -7,6 +7,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('-atool_path')
 parser.add_argument('-atool_library_path')
 parser.add_argument('-move_textures', action='store_true')
+parser.add_argument('-move_sub_assets', action='store_true')
 
 args = sys.argv[sys.argv.index('--') + 1:]
 args = parser.parse_args(args)
@@ -30,14 +31,16 @@ def move_textures():
     sys.path.insert(0, args.atool_path)
     import data
     import utils
+    import bl_utils
     assets = data.AssetData(library=args.atool_library_path)
+    assets.update_library()
 
     os.makedirs(TEXTURES_PATH, exist_ok = True)
 
     for texture in textures:
-        filepath = bpy.path.abspath(texture.filepath)
+        filepath = bl_utils.get_block_abspath(texture)
 
-        if assets.is_sub_asset(filepath):
+        if not args.move_sub_assets and assets.is_sub_asset(filepath):
             texture.filepath = bpy.path.relpath(filepath)
             continue
         
