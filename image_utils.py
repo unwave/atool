@@ -28,12 +28,10 @@ if __package__:
     from . import utils
     set_OPENCV_IO_ENABLE_OPENEXR()
     from . import type_definer
-    from . imohashxx import hashfile
 else:
     import utils
     set_OPENCV_IO_ENABLE_OPENEXR()
     import type_definer
-    from imohashxx import hashfile
 
 import cv2 as cv
 

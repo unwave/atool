@@ -16,8 +16,6 @@ from bpy_extras.io_utils import ImportHelper
 import mathutils
 from mathutils.geometry import area_tri
 
-from . imohashxx import hashfile
-
 from . import utils
 from . import image_utils
 from . import type_definer
