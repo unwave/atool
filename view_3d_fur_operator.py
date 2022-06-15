@@ -10,6 +10,11 @@ from . import utils
 
 register = bl_utils.Register(globals())
 
+class Poll():
+    @classmethod
+    def poll(cls, context):
+        return context.space_data and context.space_data.type == 'VIEW_3D' and context.mode in ('OBJECT', 'PARTICLE')
+
 class ATOOL_OT_add_fur(bpy.types.Operator, bl_utils.Object_Mode_Poll):
     bl_idname = "atool.add_fur"
     bl_label = "Add Fur"
@@ -170,17 +175,23 @@ class ATOOL_OT_add_fur(bpy.types.Operator, bl_utils.Object_Mode_Poll):
         return {'FINISHED'}
 
 
-class ATOOL_OT_isolate_particle_system(bpy.types.Operator, bl_utils.Object_Mode_Poll):
+class ATOOL_OT_isolate_particle_system(bpy.types.Operator, Poll):
     bl_idname = "atool.isolate_particle_system"
     bl_label = "Isolate Particle System"
     bl_description = "Isolate the fur in the viewport display"
     bl_options = {'REGISTER', 'UNDO'}
 
-    name: bpy.props.StringProperty()
+    name: bpy.props.StringProperty(name = "Name")
+    is_additive: bpy.props.BoolProperty(name = "Additive")
 
     def draw(self, context):
         layout = self.layout
         layout.prop_search(self, "name", context.object, "particle_systems", text = 'Name')
+        layout.prop(self, 'is_additive')
+
+    def invoke(self, context, event):
+        self.is_additive = event.ctrl
+        return self.execute(context)
 
     def execute(self, context):
 
@@ -192,7 +203,7 @@ class ATOOL_OT_isolate_particle_system(bpy.types.Operator, bl_utils.Object_Mode_
 
             if self.name == particle_system.name:
                 modifier.show_viewport = True
-            else:
+            elif not self.is_additive:
                 modifier.show_viewport = False
 
         for index, particle_system in enumerate(object.particle_systems):
@@ -202,7 +213,7 @@ class ATOOL_OT_isolate_particle_system(bpy.types.Operator, bl_utils.Object_Mode_
         return {'FINISHED'}
 
 
-class ATOOL_OT_show_all_particle_systems(bpy.types.Operator, bl_utils.Object_Mode_Poll):
+class ATOOL_OT_show_all_particle_systems(bpy.types.Operator, Poll):
     bl_idname = "atool.show_all_particle_systems"
     bl_label = "Show All"
     bl_description = "Show all the fur in the viewport display"
@@ -285,7 +296,7 @@ class ATOOL_OT_render_view(bpy.types.Operator, bl_utils.Object_Mode_Poll):
         return {'FINISHED'}
 
 
-class ATOOL_OT_rename_particle_system(bpy.types.Operator, bl_utils.Object_Mode_Poll):
+class ATOOL_OT_rename_particle_system(bpy.types.Operator, Poll):
     bl_idname = "atool.rename_particle_system"
     bl_label = "Rename Particle System"
     bl_description = "Rename the system, the modifier and the settings"
@@ -317,3 +328,63 @@ class ATOOL_OT_rename_particle_system(bpy.types.Operator, bl_utils.Object_Mode_P
 
         return {'FINISHED'}
         
+
+register.property(
+    'atool_enable_armature_parent',
+    bpy.props.PointerProperty(type = bpy.types.Object),
+    bpy.types.Object
+)
+
+class ATOOL_OT_enable_armature(bpy.types.Operator, Poll):
+    bl_idname = "atool.enable_armature"
+    bl_label = "Enable Armature"
+    bl_description = "Enable and parent the armature connected to the active and selected objects or if is an armature for all the users"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    enable: bpy.props.BoolProperty(name = 'Enable', default = True)
+
+    def execute(self, context):
+
+        selected_objects = context.selected_objects
+        if not context.object in selected_objects:
+            selected_objects.append(context.object)
+
+        armatures = set()
+
+        for object in selected_objects:
+
+            if object.type == 'ARMATURE':
+                armatures.add(object)
+                continue
+
+            for modifier in object.modifiers:
+
+                if modifier.type != 'ARMATURE':
+                    continue
+
+                armature = modifier.object
+                if armature:
+                    armatures.add(armature)
+
+        for armature in armatures:
+            armature.hide_set(not self.enable)
+
+        for object in bpy.data.objects:
+            for modifier in object.modifiers:
+
+                if modifier.type != 'ARMATURE':
+                    continue
+
+                if modifier.object in armatures:
+                    modifier.show_viewport = self.enable
+                    modifier.show_render = self.enable
+
+            if self.enable:
+                if object.get('atool_enable_armature_parent'):
+                    object.parent = object['atool_enable_armature_parent']
+            else:
+                if object.parent and object.parent in armatures:
+                    object['atool_enable_armature_parent'] = object.parent
+                    object.parent = None
+
+        return {'FINISHED'}

@@ -145,7 +145,7 @@ def register():
     wm["at_current_page"] = 1
 
     threading.Thread(target=wm.at_asset_data.update, args=(bpy.context,), daemon=True).start()
-    threading.Thread(target=utils.init_find, daemon=True).start()
+    threading.Thread(target=utils.EVERYTHING.set_es_exe, daemon=True).start()
 
     register_time = timer() - start
     log.info(f"register time:\t {register_time:.2f} sec")

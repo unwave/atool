@@ -36,7 +36,8 @@
 				"gl_normal",
 				"nor_gl",
 				"nor_dx",
-				"normalsmap"
+				"normalsmap",
+				"normalmap"
 			],
 			"albedo":[
 				"albedo",
@@ -62,7 +63,8 @@
 				"col_var1",
 				"col",
 				"c",
-				"colors"
+				"colors",
+				"colormap"
 			],
 			"metallic":[
 				"metallic",

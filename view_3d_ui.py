@@ -49,11 +49,25 @@ class ATOOL_MT_asset(bpy.types.Menu):
         
         layout.separator()
         layout.operator("atool.import_files", icon="SHADING_TEXTURE")
-        layout.operator("atool.get_web_asset", icon="URL")
+        layout.operator("atool.add_remote_asset", icon="FILEBROWSER")
+
         layout.separator()
-        
+        layout.operator("atool.get_web_asset", icon="URL")
+        layout.menu('ATOOL_MT_urls', icon = 'URL')
+
+        layout.separator()
         layout.operator("atool.delete_file_cache")
         layout.operator("atool.move_asset_to_desktop", icon='SCREEN_BACK')
+
+class ATOOL_MT_urls(bpy.types.Menu):
+    bl_idname = "ATOOL_MT_urls"
+    bl_label = "URLs"
+
+    def draw(self, context):
+        layout = self.layout
+        
+        layout.operator("atool.open_url", text = "Poly Haven").url = 'https://polyhaven.com/textures'
+        layout.operator("atool.open_url", text = "Ambient CG").url = 'https://ambientcg.com/list?type=Atlas,Decal,Material'
 
 class ATOOL_MT_asset_library(bpy.types.Menu):
     bl_idname = "ATOOL_MT_asset_library"
@@ -103,10 +117,17 @@ register.property(
     'current_browser_asset_id',
     bpy.props.StringProperty(options = {'HIDDEN', 'SKIP_SAVE'})
 )
+
 register.property(
     'import_button_icon',
     bpy.props.StringProperty(default='NONE', options = {'HIDDEN', 'SKIP_SAVE'})
 )
+
+register.property(
+    'is_remote_atool_asset',
+    bpy.props.BoolProperty(default = False, options = {'HIDDEN', 'SKIP_SAVE'})
+)
+
 class ATOOL_PT_panel(bpy.types.Panel):
     bl_idname = "ATOOL_PT_panel"
     bl_label = "Load Asset"
@@ -165,6 +186,8 @@ class ATOOL_PT_panel(bpy.types.Panel):
             try:
                 asset = asset_data[library_browser_asset_id]
 
+                wm.is_remote_atool_asset = asset.is_remote
+
                 info["id"] = asset.id
                 info["name"] = asset.info.get("name", "")
                 info["url"] = asset.info.get("url", "")
@@ -211,7 +234,10 @@ class ATOOL_PT_panel(bpy.types.Panel):
             if info.is_id_shown:
                 row = column.row(align=True)
                 row.operator("atool.open_asset_folder", text='', icon = 'FILE_FOLDER', emboss=False)
-                row.prop(info, "id", text="")
+                if wm.is_remote_atool_asset:
+                    row.label(text = "Remote Asset")
+                else:
+                    row.prop(info, "id", text="")
 
             row = column.row(align=True)
             row.operator("atool.open_attr", icon = 'SYNTAX_OFF', emboss=False).attr_name = "name"
@@ -375,21 +401,31 @@ class ATOOL_PT_view_3d_fur_tools(bpy.types.Panel):
     bl_category = "AT"
     bl_space_type = 'VIEW_3D'
     bl_region_type = "UI"
-    bl_context = "objectmode"
     bl_options = {'DEFAULT_CLOSED'}
 
-    def draw(self, context):
+    @classmethod
+    def poll(cls, context):
+        return context.space_data and context.space_data.type == 'VIEW_3D' and context.mode in ('OBJECT', 'PARTICLE')
 
+    def draw(self, context):
+        
         column = self.layout.column()
         
         column.operator("atool.add_fur")
 
         column.separator()
-        
-        column.operator("atool.show_all_particle_systems").show_viewport = True
-        column.operator("atool.show_all_particle_systems", text = 'Hide All').show_viewport = False
-        render = context.scene.render
 
+        subcolumn = column.column(align=True)
+        subcolumn.operator("atool.show_all_particle_systems").show_viewport = True
+        subcolumn.operator("atool.show_all_particle_systems", text = 'Hide All').show_viewport = False
+
+        subcolumn = column.column(align=True)
+        subcolumn.operator("atool.enable_armature", text = "Enable Armature").enable = True
+        subcolumn.operator("atool.enable_armature", text = "Disable Armature").enable = False
+        
+        column.separator()
+
+        render = context.scene.render
         row = column.row(align = True)
         row.prop(render, "use_simplify", text="")
 
@@ -397,16 +433,19 @@ class ATOOL_PT_view_3d_fur_tools(bpy.types.Panel):
         row.active = render.use_simplify
         row.prop(render, "simplify_child_particles", text="Child Particles")
 
-        column.separator()
-
         box = column.box().column(align=True)
         object = context.object
         if object:
             if object.particle_systems:
+                modifier_by_particle_system = {modifier.particle_system: modifier for modifier in object.modifiers if modifier.type == 'PARTICLE_SYSTEM'}
+                active_particle_system = object.particle_systems.active
                 for particle_system in object.particle_systems:
                     row = box.row(align = True)
-                    row.label(text = str(particle_system.name))
-                    row.operator("atool.isolate_particle_system", text = 'Isolate').name = particle_system.name
+
+                    emboss = particle_system == active_particle_system
+                    icon = 'RESTRICT_VIEW_OFF' if modifier_by_particle_system[particle_system].show_viewport else 'RESTRICT_VIEW_ON'
+                    row.operator("atool.isolate_particle_system", icon = icon, text = str(particle_system.name), depress = True, emboss = emboss).name = particle_system.name
+                    
                     row.operator("atool.rename_particle_system", text = '', icon = 'FONT_DATA').name = particle_system.name
             else:
                 row = box.row(align = True)

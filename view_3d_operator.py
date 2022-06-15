@@ -566,10 +566,15 @@ class ATOOL_OT_open_gallery(bpy.types.Operator, Object_Mode_Poll):
         if not asset:
             return {'CANCELLED'}
 
-        images = [file.path for file in os.scandir(asset.gallery)]
-        if not images:
+        if not os.path.exists(asset.gallery):
             self.report({'INFO'}, "No gallery.")
             return {'CANCELLED'}
+
+        images = [file.path for file in os.scandir(asset.gallery)]
+        if not images:
+            self.report({'INFO'}, "The gallery is empty.")
+            return {'CANCELLED'}
+
         latest_image = max(images, key=os.path.getmtime)
         utils.os_open(self, latest_image)
             
@@ -751,6 +756,11 @@ class ATOOL_OT_reload_asset(bpy.types.Operator, Object_Mode_Poll):
 
         data, id = get_asset_data_and_id(self, context)
         if not (data and id):
+            return {'CANCELLED'}
+
+        asset = data[id]
+        if self.do_reimport and asset.is_remote:
+            self.report({'INFO'}, "Reimporting remote assets is not allowed.")
             return {'CANCELLED'}
 
         threading.Thread(target=data.reload_asset, args=(id, context, self.do_reimport)).start()
@@ -1345,7 +1355,7 @@ class ATOOL_OT_find_missing(bpy.types.Operator, Object_Mode_Poll):
         self.missing_files_by_path = utils.list_by_key(self.missing_files, operator.attrgetter('path')) # type: typing.Dict[str, typing.List[bl_utils.Missing_File]]
         
         names = [os.path.basename(path) for path in self.missing_files_by_path.keys()]
-        found_files = utils.find(names)
+        found_files = utils.EVERYTHING.find(names)
         if not found_files:
             self.found_files_by_name = {}
             return
@@ -1672,7 +1682,7 @@ class ATOOL_OT_import_unreal(bpy.types.Operator, Object_Mode_Poll):
                         print(f"{path} does not exist.")
                         continue
 
-                    converted_textures.append[path]
+                    converted_textures.append(path)
 
                     basename_without_suffix = os.path.splitext(basename)[0]
                     info = textures_info[basename_without_suffix]
@@ -2217,7 +2227,7 @@ class ATOOL_OT_delete_file_cache(bpy.types.Operator, Object_Mode_Poll):
             return {'CANCELLED'}
         
         asset.info.pop('file_info')
-        asset.update_info(update = False)
+        asset.save(update = False)
         self.report({'INFO'}, "The file cache has been deleted.")
         
         return {'FINISHED'}
@@ -2251,7 +2261,7 @@ class ATOOL_OT_delete_all_file_caches(bpy.types.Operator, Object_Mode_Poll):
                 continue
         
             asset.info.pop("file_info")
-            asset.update_info(update = False)
+            asset.save(update = False)
             counter += 1
             
         if counter:
@@ -2644,4 +2654,52 @@ class ATOOL_OT_setup_adaptive_subdivision(bpy.types.Operator, Object_Mode_Poll):
         from . import shader_editor_operator
         shader_editor_operator.ensure_adaptive_subdivision(self, context, object_copy, object_copy.active_material)
         
+        return {'FINISHED'}
+
+
+class ATOOL_OT_add_remote_asset(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.add_remote_asset"
+    bl_label = "Add Remote Asset"
+    bl_description = "Create a remote asset from a folder without using the library folder"
+
+    directory: bpy.props.StringProperty(
+        subtype='DIR_PATH',
+        options={'HIDDEN', 'SKIP_SAVE'}
+    )
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+
+        data, id = get_asset_data_and_id(self, context)
+        if not data:
+            return {'CANCELLED'}
+
+        if not os.path.exists(self.directory):
+            self.report({'INFO'}, "The folder does not exists.")
+            return {'CANCELLED'}
+
+        json_path = os.path.join(self.directory, '__asset__.json')
+        if os.path.exists(json_path):
+            self.report({'INFO'}, "The folder is already an asset. Only one asset per folder is allowed.")
+            return {'CANCELLED'}
+
+        threading.Thread(target=data.add_remote_asset, args=(self.directory, context)).start()
+
+        return {'FINISHED'}
+
+
+class ATOOL_OT_open_url(bpy.types.Operator, Object_Mode_Poll):
+    bl_idname = "atool.open_url"
+    bl_label = "URL"
+    bl_description = "Click to open"
+
+    url: bpy.props.StringProperty()
+
+    def execute(self, context):
+       
+        utils.web_open(self.url)
+            
         return {'FINISHED'}

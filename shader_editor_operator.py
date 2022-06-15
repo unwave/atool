@@ -26,8 +26,6 @@ from . import node_utils
 from . import data
 
 
-# from timeit import default_timer as timer
-
 MAT_TYPES = (None , "_at_temp_", "_at_temp_unt_", "_at_temp_tri_", "_at_temp_tri_unt_")
 
 M_BASE = "_at_temp_"
@@ -823,7 +821,8 @@ class ATOOL_OT_save_material_settings(bpy.types.Operator, Shader_Editor_Poll):
                 if any(library.is_sub_asset(path) for path in image_paths):
                     asset = utils.get_most_common(library.get_asset_by_path(path) for path in image_paths) # type: data.Asset
                     
-                    asset.update_info({"material_settings": material_settings})
+                    asset["material_settings"] = material_settings
+                    asset.save()
                     self.report({'INFO'}, f"The settings have been saved for the library group: {group.name}. ID: {asset.id}")
                     
                     if not self.save_to_database:
@@ -1407,7 +1406,7 @@ class Modal_Material_Import(Material_Import_Properties):
                     image.update_source()
                     
                 if self.asset:
-                    self.asset.update_info()
+                    self.asset.save()
                 
             if self.asset:
                 images = [image_utils.Image.from_asset_info(image, self.asset.info, config) for image in self.image_paths]

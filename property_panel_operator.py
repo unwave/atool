@@ -31,7 +31,7 @@ class ATOOL_PT_default_world(Property_Panel_Poll, bpy.types.Panel):
 
         col = layout.column(align=True)
         operator = col.operator("atool.set_world")
-        operator.engine = context.scene.render.engine
+        # operator.engine = context.scene.render.engine
 
 
 def get_cycles_world():

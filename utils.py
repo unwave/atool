@@ -1,5 +1,6 @@
 import os
 import json
+import threading
 import typing
 import zipfile
 import io
@@ -14,11 +15,6 @@ import sys
 from datetime import datetime
 from timeit import default_timer
 
-if __package__:
-    from . import asset_parser
-else:
-    import asset_parser
-
 IMAGE_EXTENSIONS = { ".bmp", ".jpeg", ".jpg", ".jp2", ".j2c", ".tga", ".cin", ".dpx", ".exr", ".hdr", ".sgi", ".rgb", ".bw", ".png", ".tiff", ".tif", ".psd", ".dds"}
 GEOMETRY_EXTENSIONS = {".obj", ".fbx"}
 URL_EXTENSIONS = (".url", ".desktop", ".webloc")
@@ -26,6 +22,7 @@ META_FOLDERS = {'__gallery__', '__extra__', '__archive__'}
 META_TYPES = {"__info__", "__icon__"} | META_FOLDERS
 
 DIR_PATH = os.path.dirname(os.path.realpath(__file__))
+PLATFORM = sys.platform
 
 class PseudoDirEntry:
     def __init__(self, path):
@@ -178,7 +175,7 @@ class File_Filter(typing.Dict[str, pathlib.Path] , dict):
         return [item for item in self.values() if item.suffix in extension]
 
 
-def move_to_folder(file: typing.Union[str, os.DirEntry], folder:str, create = True, exists_rename = True):
+def move_to_folder(file: typing.Union[str, os.DirEntry, PseudoDirEntry, pathlib.PurePath], folder: str, create = True, exists_rename = True):
     
     if isinstance(file, str):
         old_path = file
@@ -195,7 +192,7 @@ def move_to_folder(file: typing.Union[str, os.DirEntry], folder:str, create = Tr
     if old_path != new_path:
 
         if create:
-            os.makedirs(folder, exist_ok=True)
+            os.makedirs(folder, exist_ok = True)
 
         if exists_rename:
             name, suffix = os.path.splitext(os.path.basename(new_path))
@@ -395,67 +392,108 @@ def locate_item(iter, item, is_dict_key = False, return_as = None, mode = 'eq'):
         return [Item_Location(path, iter) for path in locate(iter, item)]
         
 
-EVERYTHING_EXE = None
-ES_EXE = None
-ES_ERROR = "ES is not available."
-PLATFORM = sys.platform
+class Everything:
+    def __init__(self):
+        self.exe = None
+        self.es_exe = None
+        self.error_text = ""
+        self.is_initialized = False
+        self.lock = threading.RLock()
 
-def init_find():
+    @property
+    def is_available(self):
 
-    global EVERYTHING_EXE
-    global ES_EXE 
-    global ES_ERROR
+        if self.is_initialized:
+            return bool(self.es_exe)
+        else:
+            self.set_es_exe()
+            if not self.es_exe:
+                print(self.error_text)
+            return bool(self.es_exe)
 
-    if not os.name == 'nt':
-        ES_ERROR = "Current OS is not supported."
-        return
+    def set_es_exe(self):
 
-    es_exe = os.path.join(os.path.dirname(__file__), 'es.exe')
-    if not os.path.exists(es_exe):
-        try:
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Classes\Everything.FileList\DefaultIcon") as key:
-                EVERYTHING_EXE = winreg.QueryValueEx(key, "")[0].split(",")[0]
-        except:
-            ES_ERROR = "Everything.exe is not found."
-            print(ES_ERROR)
-            return
-    
-        with tempfile.TemporaryDirectory() as temp_dir:
-                is_success ,zip = asset_parser.get_web_file(r"https://www.voidtools.com/ES-1.1.0.18.zip", content_folder = temp_dir)
+        with self.lock:
 
+            if self.is_initialized:
+                return
+
+            print('atool: checking es.exe')
+
+            if not os.name == 'nt':
+                self.error_text = "Current OS is not supported."
+                self.is_initialized = True
+                return
+
+            es_exe = os.path.join(os.path.dirname(__file__), 'es.exe')
+            if os.path.exists(es_exe):
+                self.es_exe = es_exe
+                self.is_initialized = True
+                return 
+
+            try:
+                import winreg
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Classes\Everything.FileList\DefaultIcon") as key:
+                    self.exe = winreg.QueryValueEx(key, "")[0].split(",")[0]
+            except:
+                self.error_text = "Everything.exe is not found."
+                self.is_initialized = True
+                return
+        
+            with tempfile.TemporaryDirectory() as temp_dir:
+
+                if __package__:
+                    from . import asset_parser
+                else:
+                    import asset_parser
+
+                is_success, zip = asset_parser.get_web_file(r"https://www.voidtools.com/ES-1.1.0.18.zip", content_folder = temp_dir)
                 if not is_success:
-                    ES_ERROR = "Cannot download es.exe"
-                    print(ES_ERROR)
+                    self.error_text = "Cannot download es.exe"
+                    self.is_initialized = True
                     return
 
                 for file in extract_zip(zip):
                     if os.path.basename(file) == 'es.exe':
-                        ES_EXE = move_to_folder(file, os.path.dirname(__file__), create = False)
+                        move_to_folder(file, os.path.dirname(__file__), create = False)
                 
-                if not ES_EXE:
-                    ES_ERROR = "Cannot find es.exe in downloads."
-                    print(ES_ERROR)
-                    return
-    else:
-        ES_EXE = es_exe
+                if not os.path.exists(es_exe):
+                    self.error_text = "Cannot find es.exe in downloads."
+                    self.is_initialized = True
+                    return None
+
+                self.es_exe = es_exe
+                self.is_initialized = True
+
+    def find(self, names):
+
+        if not self.is_available:
+            raise BaseException(self.error_text)
+
+        query = '|'.join(["*\\" + '"' + name + '"' for name in names])
+            
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_file = os.path.join(temp_dir, "temp.txt")
+            command = ' '.join(['"' + self.es_exe + '"', query, '-export-txt', '"' + temp_file + '"'])
+            subprocess.run(command)
+            with open(temp_file, encoding='utf-8') as text:
+                paths = text.read().split("\n")[:-1]
+
+        return paths
+
+    def get_everything(self, query):
         
+        if not self.is_available:
+            raise BaseException(self.error_text)
 
-def find(names):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_file = os.path.join(temp_dir, "temp.txt")
+            subprocess.run([self.es_exe, query, '-export-txt', temp_file])
+            with open(temp_file, encoding='utf-8') as text:
+                return text.read().split("\n")[:-1]
 
-    if not ES_EXE:
-        raise BaseException(ES_ERROR)
+EVERYTHING = Everything()
 
-    query = '|'.join(["*\\" + '"' + name + '"' for name in names])
-        
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_file = os.path.join(temp_dir, "temp.txt")
-        command = ' '.join(['"' + ES_EXE + '"', query, '-export-txt', '"' + temp_file + '"'])
-        subprocess.run(command)
-        with open(temp_file, encoding='utf-8') as text:
-            paths = text.read().split("\n")[:-1]
-
-    return paths
 
 def get_closest_path(lost_path, string_paths):
 
@@ -783,16 +821,48 @@ def get_most_common(items: typing.Iterable):
         dictionary[item] = dictionary.get(item, 0) + 1
     return sorted(dictionary.items(), key = operator.itemgetter(1), reverse = True)[0][0]
 
-def timeit(func):
 
-    @functools.wraps(func)
-    def timed_func(*args, **kw):
-    
-        start = default_timer()
-        result = func(*args, **kw)
-        end = default_timer()
+def timeit(text = None, digits = 2, average = False, timeit_average_dict = {}):
+    """To getting average text should true and be unique for a testing item."""
+
+    def timeit_decorator(func):
+
+        @functools.wraps(func)
+        def timeit_func(*args, **kwargs):
         
-        print(f"{func.__name__} took {end - start}")
-        return result
+            start = default_timer()
+            return_value = func(*args, **kwargs)
+            end = default_timer()
 
-    return timed_func
+            nonlocal text
+
+            time = end - start
+            if average and text:
+                result = timeit_average_dict.get(text)
+                if result:
+                    count, func_time = result
+                    timeit_average_dict[text] = (count + 1, func_time + time)
+                    time = (func_time + time)/(count + 1)
+                else:
+                    timeit_average_dict[text] = (1, time)
+
+            if not text:
+                text = func.__name__ + ' took'
+
+            if time >= 1:
+                time = round(time, digits)
+            else:
+                for index, digit in enumerate(format(time, 'f')[2:]):
+                    if digit == '0':
+                        continue
+                    time = round(time, digits + index)
+                    break
+
+            print(f"{text}: {format(time, 'f').rstrip('.0')} s")
+
+            return return_value
+
+        return timeit_func
+
+    return timeit_decorator
+    

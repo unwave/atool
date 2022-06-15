@@ -118,7 +118,7 @@ def update_string_info(property_name, id, info, context):
     info[property_name] = info[property_name].strip(PROHIBITED_TRAILING_SYMBOLS)
     if asset_to_update.info.get(property_name) != info[property_name]:
         asset_to_update.info[property_name] = info[property_name]
-        asset_to_update.update_info()
+        asset_to_update.save()
         # context.window_manager.at_current_search_query = ''
         update_search(context.window_manager, None)
 
@@ -132,7 +132,7 @@ def update_list_info(property_name, id, info, context):
     info[property_name] = ' '.join(tag_list)
     if set(asset_to_update.info[property_name]) != set(tag_list):
         asset_to_update.info[property_name] = tag_list
-        asset_to_update.update_info()
+        asset_to_update.save()
         # context.window_manager.at_current_search_query = ''
         update_search(context.window_manager, None)
 
@@ -183,7 +183,7 @@ def update_dimension(property_name, id, info, context):
     if current_value != info[property_name]:
 
         asset_to_update.info['dimensions'][property_name] = info[property_name]
-        asset_to_update.update_info()
+        asset_to_update.save()
 
         # context.window_manager.at_current_search_query = ''
         update_search(context.window_manager, None)
@@ -256,16 +256,24 @@ class Asset:
     system_tags_mtime: float
     ctime: float
     
-    def __init__(self, path: os.DirEntry):
+    def __init__(self, path: os.DirEntry, is_remote = False):
         self.info: dict
         self.path: str
         self.preview = None
         self.path = path.path
+        self.is_remote = is_remote
+
         self.id: str
-        self.id = path.name.lower()
-        self.json_path = os.path.join(self.path, "__info__.json")
+        if is_remote:
+            self.id = self.path.lower()
+            self.json_path = os.path.join(self.path, "__asset__.json")
+        else:
+            self.id = path.name.lower()
+            self.json_path = os.path.join(self.path, "__info__.json")
+
         self.gallery = os.path.join(self.path, "__gallery__")
         self.icon = os.path.join(self.path, "__icon__.png")
+
         self.lock = threading.RLock()
 
         if os.path.exists(self.icon) and not bpy.app.background:
@@ -290,9 +298,11 @@ class Asset:
                 del self.__dict__['icon_id']
             self.icon_id
             update_search(context.window_manager, context)
-        self.preview.reload()
-        len(self.preview.image_pixels_float)
-        self.preview.icon_pixels_float = []
+
+        if self.preview:
+            self.preview.reload()
+            len(self.preview.image_pixels_float)
+            self.preview.icon_pixels_float = []
     
     def __getitem__(self, key):
         return self.info[key]
@@ -315,7 +325,6 @@ class Asset:
         if isinstance(dimensions, list):
             self['dimensions'] = {name: value for name, value in zip('xyz', dimensions)}
 
-
     @classmethod
     def default(cls, path: os.DirEntry): # type: (os.DirEntry) -> Asset
         asset = cls(path)
@@ -337,29 +346,48 @@ class Asset:
             traceback.print_exc()
             
         json_reading_time += timer() - start
-        
 
         asset.standardize_info()
-
-        if not asset.update_system_tags():
-            asset.update_search_set()
+        asset.update_system_tags()
+        asset.update_search_set()
 
         return asset
 
     @classmethod
-    def remote(cls, path: str): # type: (str) -> Asset
-        asset = cls(path)
-        
+    def remote(cls, path: typing.Union[os.DirEntry, utils.PseudoDirEntry]): # type: (str) -> Asset
+
+        asset = cls(path, is_remote = True)
+
         try:
-            with open(asset.json_path, "r", encoding='utf-8') as json_file:
+            with open(asset.json_path, "r", encoding = 'utf-8') as json_file:
                 asset.info = json.load(json_file)
         except:
             return None
 
         asset.standardize_info()
+        asset.update_system_tags()
+        asset.update_search_set()
 
-        if not asset.update_system_tags():
-            asset.update_search_set()
+        return asset
+
+    @classmethod
+    def new_remote(cls, path: str): # type: (str) -> Asset
+        
+        json_path =  os.path.join(path, '__asset__.json')
+        if os.path.exists(json_path):
+            raise BaseException('The asset already exists.')
+
+        asset = cls(utils.PseudoDirEntry(path), is_remote = True)
+
+        asset.info = asset.get_empty_info()
+            
+        with open(asset.json_path, 'w', encoding = 'utf-8') as json_file:
+            json.dump(asset.info, json_file, indent=4, ensure_ascii=False)
+
+        asset.update_system_tags()
+        asset.update_search_set()
+
+        return asset
 
     @classmethod
     def auto(cls, path: os.DirEntry, asset_data_path, ignore_info = False): # type: (os.DirEntry, str, bool) -> typing.Tuple[str, Asset]
@@ -500,8 +528,8 @@ class Asset:
 
         asset = cls.new(id_path, exist_ok = True)
         if ignore_info and old_info:
-            asset.update_info(old_info)
-        asset.update_info(info)
+            asset.save(old_info)
+        asset.save(info)
         asset.standardize_info()
         
         id = id.lower()
@@ -543,60 +571,53 @@ class Asset:
         return info
 
     @utils.synchronized
-    def move_to_folder(self, path_or_paths: typing.Union[str, typing.Iterable[str]], subfolder = None):
-        if subfolder:
-            os.makedirs(os.path.join(self.path, subfolder), exist_ok = True)
+    def move_to_folder(self, path, subfolder = None, create = True, exists_rename = True):
 
-        if isinstance(path_or_paths, str):
-            if subfolder:
-                new_path = os.path.join(self.path, subfolder, os.path.basename(path_or_paths))
-            else:
-                new_path = os.path.join(self.path, os.path.basename(path_or_paths))
-            shutil.move(path_or_paths, new_path)
-        else:
-            for path in path_or_paths:
-                if subfolder:
-                    new_path = os.path.join(self.path, subfolder, os.path.basename(path))
-                else:
-                    new_path = os.path.join(self.path, os.path.basename(path))
-                shutil.move(path, new_path)
+        target = self.path
+        if subfolder:
+            target = os.path.join(self.path, subfolder)
+
+        utils.move_to_folder(path, target, create, exists_rename)
 
         self.update_system_tags()
 
     @utils.synchronized
-    def update_system_tags(self, do_force_update=False):
+    def update_system_tags(self, do_force_update = False):
 
         mtime = os.path.getmtime(self.path)
-        if not (mtime > self.info.get("system_tags_mtime", 0) or do_force_update):
+        if not (do_force_update or mtime > self.info.get("system_tags_mtime", 0)):
             return False
-
-        # ???
-        os.makedirs(self.gallery, exist_ok=True)
 
         if not os.path.exists(self.icon):
             self.generate_icon_from_gallery()
 
         extensions = {os.path.splitext(file.name)[1].lower() for file in os.scandir(self.path) if file.name not in META_FILES}
 
-        system_tags = []
+        if '' in extensions: # folder or no extension
+            extensions.remove('')
+
+        tags = []
 
         if ".blend" in extensions:
-            system_tags.append("blend")
+            tags.append("blend")
         
         if not extensions.isdisjoint(utils.IMAGE_EXTENSIONS):
-            system_tags.append("image")
+            tags.append("image")
 
         if ".zip" in extensions:
-            system_tags.append("zip")
+            tags.append("zip")
 
         if ".sbsar" in extensions:
-            system_tags.append("sbsar")
+            tags.append("sbsar")
 
-        if not self.info["system_tags"]:
-            system_tags.append("no_type")
+        if not tags:
+            tags.append("no_type")
 
-        self.info["system_tags"] = system_tags
-        self.update_info({"system_tags_mtime": mtime})
+        tags.extend(extensions)
+
+        self["system_tags"] = tags
+        self["system_tags_mtime"] = mtime
+        self.save()
 
         return True
 
@@ -629,16 +650,21 @@ class Asset:
 
     @utils.synchronized
     def generate_icon_from_gallery(self):
+        if not os.path.exists(self.gallery):
+            return None
+
         for file in [item for item in os.scandir(self.gallery) if item.is_file() and item.name.lower().endswith(tuple(utils.IMAGE_EXTENSIONS))]:
             with pillow_image.open(file.path) as image:
                 icon_path = image_utils.save_as_icon(image, self.path)
                 self.icon = icon_path
                 return icon_path
+
         return None
 
     @utils.synchronized
-    def update_info(self, info = None, update = True):
+    def save(self, info = None, update = True):
         """ if `info` is `None` when only the json updates"""
+
         if info:
             for key, value in info.items():
                 current_value = self.info.get(key)
@@ -654,6 +680,8 @@ class Asset:
                 else:
                     self.info[key] = value
 
+            self.update_search_set()
+
         with open(self.json_path, 'r+', encoding='utf-8') as json_file:
             data = json.load(json_file)
             if update:
@@ -663,8 +691,6 @@ class Asset:
             json_file.seek(0)
             json.dump(data, json_file, indent=4, ensure_ascii=False)
             json_file.truncate()
-
-        self.update_search_set()
 
     @utils.synchronized
     def extract_zips(self):
@@ -727,7 +753,7 @@ class Asset:
         is_ok, result = asset_parser.get_web(url)
 
         if is_ok:
-            self.update_info(result)
+            self.save(result)
             context.window_manager.current_browser_asset_id = ''
             update_search(context.window_manager ,context)
             print("The info has been updated.")
@@ -792,6 +818,7 @@ class AssetData(typing.Dict[str, Asset], dict):
     def __getitem__(self, key: str) -> Asset:
         return dict.__getitem__(self, key.lower())
 
+    @utils.timeit(text = 'atool asset import time')
     @utils.synchronized
     def update(self, context):
 
@@ -802,14 +829,18 @@ class AssetData(typing.Dict[str, Asset], dict):
         if not self.library:
             return
 
-        start = timer()
+        self.update_library()
+        self.update_auto()
+        self.update_remote()
+        self.update_search(context)
 
-        self.update_library(context)
-        self.update_auto(context)
-        # self.update_remote()
+    def update_search(self, context = None):
+        if not bpy.app.background and context:
+            wm = context.window_manager
+            if hasattr(wm, 'at_search'):
+                wm.at_search = wm.at_search
 
-        print(f"Asset import time:\t {timer() - start:.2f} sec")
-
+    @utils.timeit(text = 'atool library import time')
     @utils.synchronized
     def update_library(self, context = None):
         if not self.library:
@@ -824,12 +855,9 @@ class AssetData(typing.Dict[str, Asset], dict):
             if folder.is_dir():
                 self[folder.name] = Asset.default(folder)
                 
-        print(f"JSON reading time:\t {json_reading_time:.2f} sec")
+        print(f"atool JSON reading time:\t {json_reading_time:.2f} sec")
 
-        if not bpy.app.background and context:
-            wm = context.window_manager
-            if hasattr(wm, 'at_search'):
-                wm.at_search = wm.at_search
+        self.update_search(context)
 
     @utils.synchronized
     def update_auto(self, context = None):
@@ -841,13 +869,31 @@ class AssetData(typing.Dict[str, Asset], dict):
                 id, asset = Asset.auto(file, self.library)
                 self[id] = asset
 
-        if not bpy.app.background and context:
-            wm = context.window_manager
-            if hasattr(wm, 'at_search'):
-                wm.at_search = wm.at_search
+        self.update_search(context)
 
-    def update_remote(self):
-        pass
+    @utils.timeit(text = 'atool remote assets import time')
+    def update_remote(self, context = None):
+
+        if not utils.EVERYTHING.is_available:
+            print("Everything.exe is not available. Remote asset won't load.")
+            return
+
+        re_recycle = re.compile(r'.:\\\$Recycle', flags = re.IGNORECASE)
+
+        for file in utils.EVERYTHING.get_everything("*" + os.sep + "__asset__.json"):
+
+            if re_recycle.match(file):
+                print(f'фу, бяка: {file}')
+                continue
+            
+            asset = Asset.remote(utils.PseudoDirEntry(os.path.dirname(file)))
+            if not asset:
+                print(f'Cannot load: {file}')
+                continue
+
+            self[asset.path] = asset
+
+        self.update_search(context)
     
     def re_compile(self):
         self.re_id = re.compile(r'id:"(.+)"$|id:(.+)$', flags=re.IGNORECASE)
@@ -1051,30 +1097,6 @@ class AssetData(typing.Dict[str, Asset], dict):
             id = initial_id + f"_{index}"
             index += 1
 
-    def make_screen_shot(self, context, asset):
-        space_data = context.space_data
-        
-        initial_show_overlays = space_data.overlay.show_overlays
-        # not to use it if panels are not transparent
-        initial_show_region_toolbar = space_data.show_region_toolbar
-        initial_show_region_ui = space_data.show_region_ui
-        
-        space_data.overlay.show_overlays = False
-        space_data.show_region_toolbar = False
-        space_data.show_region_ui = False
-
-        # bad
-        bpy.ops.wm.redraw_timer(type='DRAW_WIN', iterations=1)
-
-        time_stamp = utils.get_time_stamp()
-        file_basename = "".join(("screen_shot_", time_stamp, ".png"))
-        screen_shot_path = os.path.join(asset.gallery, file_basename)
-        bpy.ops.screen.screenshot(filepath=screen_shot_path, full=False)
-        
-        space_data.overlay.show_overlays = initial_show_overlays
-        space_data.show_region_toolbar = initial_show_region_toolbar
-        space_data.show_region_ui = initial_show_region_ui
-
     @utils.synchronized
     def add_to_library(self, context, objects: typing.List[bpy.types.Object], info: dict):
 
@@ -1094,7 +1116,7 @@ class AssetData(typing.Dict[str, Asset], dict):
         do_move_sub_assets = info.pop('do_move_sub_assets')
 
         asset = Asset.new(asset_folder)
-        asset.update_info(info)
+        asset.save(info)
 
         blend_file_path = os.path.join(asset_folder, id + ".blend")
         bpy.data.libraries.write(blend_file_path, set(objects), fake_user=True, path_remap = 'ABSOLUTE', compress = True)
@@ -1143,7 +1165,7 @@ class AssetData(typing.Dict[str, Asset], dict):
             info["name"] = id.replace('_', ' ')
 
         asset = Asset.new(asset_folder)
-        asset.update_info(info)
+        asset.save(info)
 
         asset.move_to_folder(files)
 
@@ -1157,7 +1179,13 @@ class AssetData(typing.Dict[str, Asset], dict):
 
     @utils.synchronized
     def reload_asset(self, id: str, context: bpy.types.Context = None, do_reimport = False, new_id = None) -> str:
-        asset_folder = self[id].path
+        asset_to_reload = self[id]
+        asset_folder = asset_to_reload.path
+
+        is_remote = asset_to_reload.is_remote
+        if is_remote and do_reimport:
+            raise BaseException('Reimporting remote assets is not allowed.')
+
         del self[id]
 
         if new_id:
@@ -1171,7 +1199,10 @@ class AssetData(typing.Dict[str, Asset], dict):
                 id, asset = Asset.auto(utils.PseudoDirEntry(asset_folder), self.library, ignore_info = True)
                 self[id] = asset
             else:
-                asset = Asset.default(utils.PseudoDirEntry(asset_folder))
+                if is_remote:
+                    asset = Asset.remote(utils.PseudoDirEntry(asset_folder))
+                else:
+                    asset = Asset.default(utils.PseudoDirEntry(asset_folder))
                 id = asset.id
                 self[id] = asset
 
@@ -1203,7 +1234,7 @@ class AssetData(typing.Dict[str, Asset], dict):
         preview_path = result.pop("preview_path", None)
 
         asset = Asset.new(asset_folder, exist_ok=True)
-        asset.update_info(result)
+        asset.save(result)
 
         if preview_path:
             preview_path = os.path.join(asset_folder, os.path.basename(preview_path))
@@ -1261,7 +1292,7 @@ class AssetData(typing.Dict[str, Asset], dict):
                                 min_max = image.get_min_max(channel)
                                 multiplier = 1/abs(min_max[1] - min_max[0])
                         image.update_source()
-                        asset.update_info()
+                        asset.save()
 
                 displacement_scale = 0.1
                 dimensions = asset.get('dimensions')
@@ -1325,8 +1356,12 @@ class AssetData(typing.Dict[str, Asset], dict):
     @utils.synchronized
     def move_asset_to_desktop(self, id, context):
 
-        asset_folder = self[id].path
-        utils.move_to_folder(asset_folder, utils.get_desktop())
+        asset = self[id]
+        if asset.is_remote:
+            print('Moving remote assets is not allowed.')
+            return
+
+        utils.move_to_folder(asset.path, utils.get_desktop())
         
         del self[id]
 
@@ -1359,6 +1394,18 @@ class AssetData(typing.Dict[str, Asset], dict):
                 result[object] = utils.deduplicate(assets)
                 
         return result
+
+    def add_remote_asset(self, path, context):
+        
+        asset = Asset.new_remote(path)
+        asset.save()
+        self[asset.id] = asset
+
+        threading.Thread(target=self.render_icon, args=(asset.id, context)).start()
+
+        update_search(context.window_manager, context)
+
+        return asset.id
         
 
 register.property(
